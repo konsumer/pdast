@@ -62,11 +62,11 @@ pdast/                        ← Cargo workspace root
 
 `.pd` files are plain text. Each record ends with `;\r\n` (CRLF; LF-only is tolerated). Three chunk types:
 
-| Chunk | Meaning |
-|---|---|
+| Chunk                           | Meaning                                                                                                               |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `#N canvas x y w h [name open]` | Open a new canvas context. Root has 5 args (last = font size); sub-patch has 6 args (5th = name, 6th = open_on_load). |
-| `#X <type> ...` | An element within the current canvas. |
-| `#A <offset> <v1> <v2> ...` | Array sample data following a `#X array` record. |
+| `#X <type> ...`                 | An element within the current canvas.                                                                                 |
+| `#A <offset> <v1> <v2> ...`     | Array sample data following a `#X array` record.                                                                      |
 
 ### Object indexing
 
@@ -123,6 +123,7 @@ The result is a flat `Vec<Record>` with no nesting — nesting is reconstructed 
 ### Canvas stack
 
 `CanvasFrame` wraps a `Canvas` in progress, tracking:
+
 - `next_id: u32` — the next object index to assign.
 - `pending_array_id: Option<u32>` — the id of the most recent `#X array` node, so that subsequent `#A` records know where to write their data.
 
@@ -321,14 +322,14 @@ Incoming connections are sorted by inlet index. For a single input: `src : fn`. 
 
 ### GUI → Faust UI mapping
 
-| PD GUI | Faust UI |
-|---|---|
-| `hsl`, `vsl` | `hslider("label", default, min, max, 0.001)` |
-| `tgl` | `checkbox("label")` |
-| `nbx` | `nentry("label", default, min, max, 0.001)` |
-| `bng` | `button("label")` |
-| `hradio`, `vradio` | `nentry("label", default, min, max, 1)` |
-| `vu`, `cnv` | comment-only (decorative) |
+| PD GUI             | Faust UI                                     |
+| ------------------ | -------------------------------------------- |
+| `hsl`, `vsl`       | `hslider("label", default, min, max, 0.001)` |
+| `tgl`              | `checkbox("label")`                          |
+| `nbx`              | `nentry("label", default, min, max, 0.001)`  |
+| `bng`              | `button("label")`                            |
+| `hradio`, `vradio` | `nentry("label", default, min, max, 1)`      |
+| `vu`, `cnv`        | comment-only (decorative)                    |
 
 ---
 
@@ -369,12 +370,12 @@ Alongside these high-level functions, three `extern "C"` ABI functions (`wasm_pa
 
 When compiled with `--features wasm-js`, the `js` submodule activates. It uses `wasm-bindgen`, `serde-wasm-bindgen`, and `js-sys`. Four `#[wasm_bindgen]` functions are exported:
 
-| JS name | Rust function | Notes |
-|---|---|---|
-| `parse` | `js_parse` | Returns JS object; optional `Function` loader |
-| `parseToJson` | `js_parse_to_json` | Returns JSON string; optional `Function` loader |
-| `emitPatch` | `js_emit` | Accepts JS object (Patch or ParseResult) |
-| `emitPatchFromJson` | `js_emit_from_json` | Accepts JSON string |
+| JS name             | Rust function       | Notes                                           |
+| ------------------- | ------------------- | ----------------------------------------------- |
+| `parse`             | `js_parse`          | Returns JS object; optional `Function` loader   |
+| `parseToJson`       | `js_parse_to_json`  | Returns JSON string; optional `Function` loader |
+| `emitPatch`         | `js_emit`           | Accepts JS object (Patch or ParseResult)        |
+| `emitPatchFromJson` | `js_emit_from_json` | Accepts JSON string                             |
 
 The loader is a `js_sys::Function` called as `loader(name)` returning a string or null/undefined.
 
@@ -382,15 +383,16 @@ The loader is a `js_sys::Function` called as `loader(name)` returning a string o
 
 #### Feature flags and targets summary
 
-| Command | Target | Feature | Output |
-|---|---|---|---|
-| `wasm-pack build pdast --features wasm-js` | `wasm32-unknown-unknown` | `wasm-js` | `pdast/pkg/` npm package |
-| `cargo build -p pdast --target wasm32-unknown-unknown --features wasm-js` | same | `wasm-js` | raw `.wasm` + bindgen glue |
-| `cargo build -p pdast --target wasm32-wasip1` | WASI | none | WASI `.wasm`, C ABI exports only |
+| Command                                                                   | Target                   | Feature   | Output                           |
+| ------------------------------------------------------------------------- | ------------------------ | --------- | -------------------------------- |
+| `wasm-pack build pdast --features wasm-js`                                | `wasm32-unknown-unknown` | `wasm-js` | `pdast/pkg/` npm package         |
+| `cargo build -p pdast --target wasm32-unknown-unknown --features wasm-js` | same                     | `wasm-js` | raw `.wasm` + bindgen glue       |
+| `cargo build -p pdast --target wasm32-wasip1`                             | WASI                     | none      | WASI `.wasm`, C ABI exports only |
 
 #### `pkg/` directory
 
 `wasm-pack build` produces `pdast/pkg/` containing:
+
 - `pdast.js` — ESM entry point
 - `pdast_bg.wasm` — the compiled module
 - `pdast_bg.js` — low-level JS glue generated by `wasm-bindgen`
@@ -402,6 +404,7 @@ This directory is listed in `.gitignore`; it should be (re)built before publishi
 #### Edition 2024 notes
 
 Edition 2024 changed two things that affect the WASM code:
+
 - `#[no_mangle]` must be written `#[unsafe(no_mangle)]` — done.
 - `unsafe fn` bodies require an explicit `unsafe {}` block for unsafe operations — done in `wasm_dealloc` and the ABI helpers.
 
@@ -422,17 +425,18 @@ To add a new output target (e.g. Teensy Audio Library, C++, RNBO):
 
 The Teensy Audio Library generator (planned) would map:
 
-| PD | Teensy class |
-|---|---|
-| `osc~` (sine) | `AudioSynthWaveformSine` |
-| `noise~` | `AudioSynthNoisePink` |
-| `*~` (multiply) | `AudioEffectMultiply` |
-| `+~` (fan-in) | `AudioMixer4` |
+| PD              | Teensy class               |
+| --------------- | -------------------------- |
+| `osc~` (sine)   | `AudioSynthWaveformSine`   |
+| `noise~`        | `AudioSynthNoisePink`      |
+| `*~` (multiply) | `AudioEffectMultiply`      |
+| `+~` (fan-in)   | `AudioMixer4`              |
 | `lop~` / `hip~` | `AudioFilterStateVariable` |
-| `dac~` | `AudioOutputI2S` |
-| `adc~` | `AudioInputI2S` |
+| `dac~`          | `AudioOutputI2S`           |
+| `adc~`          | `AudioInputI2S`            |
 
 The generator would emit:
+
 1. Object declarations: `AudioSynthWaveformSine sine1;`
 2. `AudioConnection` wiring: `AudioConnection c0(sine1, 0, mixer1, 0);`
 3. A `setup()` function configuring initial parameters.
@@ -452,17 +456,17 @@ Test fixtures live in `tests/fixtures/`. The integration tests use `env!("CARGO_
 
 ### Test inventory
 
-| Test group | Count | What it covers |
-|---|---|---|
-| `parse::message::tests` | 5 | Atom tokenizer: floats, dollars, symbols, escapes |
-| `parse::tests` | 8 | Parser: all node types, indexing, connections, sub-patches, loader, arrays |
-| `emit::tests` | 3 | Emitter roundtrips: simple, msg box, sub-patch |
-| `integration` — parsing | 5 | Fixture files: sine, sub-patch, abstraction loader, GUI objects, arrays |
-| `integration` — JSON roundtrip | 2 | `parse → to_json → from_json` identity |
-| `integration` — PD roundtrip | 3 | `parse → emit_patch → re-parse` identity |
-| `integration` — JSON+PD roundtrip | 4 | `parse → JSON → from_json → emit → re-parse` (full `pd2ast \| ast2pd` path) |
-| Doc-test | 1 | `lib.rs` code example |
-| **Total** | **31** | |
+| Test group                        | Count  | What it covers                                                              |
+| --------------------------------- | ------ | --------------------------------------------------------------------------- |
+| `parse::message::tests`           | 5      | Atom tokenizer: floats, dollars, symbols, escapes                           |
+| `parse::tests`                    | 8      | Parser: all node types, indexing, connections, sub-patches, loader, arrays  |
+| `emit::tests`                     | 3      | Emitter roundtrips: simple, msg box, sub-patch                              |
+| `integration` — parsing           | 5      | Fixture files: sine, sub-patch, abstraction loader, GUI objects, arrays     |
+| `integration` — JSON roundtrip    | 2      | `parse → to_json → from_json` identity                                      |
+| `integration` — PD roundtrip      | 3      | `parse → emit_patch → re-parse` identity                                    |
+| `integration` — JSON+PD roundtrip | 4      | `parse → JSON → from_json → emit → re-parse` (full `pd2ast \| ast2pd` path) |
+| Doc-test                          | 1      | `lib.rs` code example                                                       |
+| **Total**                         | **31** |                                                                             |
 
 ---
 

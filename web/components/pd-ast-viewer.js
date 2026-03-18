@@ -20,7 +20,7 @@
  *   viewer.result = parseResult;
  */
 
-import { baseCSS } from './pd-styles.js';
+import { baseCSS } from './pd-styles.js'
 
 const css = `
   :host {
@@ -123,72 +123,78 @@ const css = `
 
   .bracket { color: var(--pd-text-dim); }
   .ellipsis { color: var(--pd-text-dim); font-style: italic; }
-`;
+`
 
 /**
  * Classify a NodeKind `kind` string for badge display.
  */
 function nodeBadge(kind) {
-  if (!kind) return null;
-  const signalKinds = ['obj', 'sub_patch', 'graph', 'array', 'unknown'];
-  const guiKinds    = ['gui'];
-  const ctrlKinds   = ['msg', 'float_atom', 'symbol_atom', 'text'];
+  if (!kind) return null
+  const signalKinds = ['obj', 'sub_patch', 'graph', 'array', 'unknown']
+  const guiKinds = ['gui']
+  const ctrlKinds = ['msg', 'float_atom', 'symbol_atom', 'text']
 
-  if (guiKinds.includes(kind))   return ['badge-gui',  kind];
-  if (ctrlKinds.includes(kind))  return ['badge-ctrl', kind];
-  if (signalKinds.includes(kind)) return ['badge-obj', kind];
-  return null;
+  if (guiKinds.includes(kind)) return ['badge-gui', kind]
+  if (ctrlKinds.includes(kind)) return ['badge-ctrl', kind]
+  if (signalKinds.includes(kind)) return ['badge-obj', kind]
+  return null
 }
 
 /** Is the node kind a signal (tilde) object? */
 function isSignalName(name) {
-  return typeof name === 'string' && name.endsWith('~');
+  return typeof name === 'string' && name.endsWith('~')
 }
 
 class PdAstViewer extends HTMLElement {
-  static observedAttributes = ['filename', 'expanded'];
+  static observedAttributes = ['filename', 'expanded']
 
   constructor() {
-    super();
-    this.attachShadow({ mode: 'open' });
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(baseCSS + css);
-    this.shadowRoot.adoptedStyleSheets = [sheet];
-    this._result = null;
-    this._expandedPaths = new Set(); // paths that are open
-    this._render();
+    super()
+    this.attachShadow({ mode: 'open' })
+    const sheet = new CSSStyleSheet()
+    sheet.replaceSync(baseCSS + css)
+    this.shadowRoot.adoptedStyleSheets = [sheet]
+    this._result = null
+    this._expandedPaths = new Set() // paths that are open
+    this._render()
   }
 
-  attributeChangedCallback() { this._render(); }
+  attributeChangedCallback() {
+    this._render()
+  }
 
-  get filename() { return this.getAttribute('filename') ?? '(untitled)'; }
+  get filename() {
+    return this.getAttribute('filename') ?? '(untitled)'
+  }
 
   /** @param {object|null} val */
   set result(val) {
-    this._result = val;
-    this._expandedPaths = new Set(['', 'patch', 'patch.root', 'patch.root.nodes']);
-    if (this.hasAttribute('expanded')) this._expandAll(val, '', 0);
-    this._render();
+    this._result = val
+    this._expandedPaths = new Set(['', 'patch', 'patch.root', 'patch.root.nodes'])
+    if (this.hasAttribute('expanded')) this._expandAll(val, '', 0)
+    this._render()
   }
-  get result() { return this._result; }
+  get result() {
+    return this._result
+  }
 
   _expandAll(obj, path, depth) {
-    if (depth > 8 || obj === null || obj === undefined || typeof obj !== 'object') return;
-    this._expandedPaths.add(path);
+    if (depth > 8 || obj === null || obj === undefined || typeof obj !== 'object') return
+    this._expandedPaths.add(path)
     if (Array.isArray(obj)) {
-      obj.forEach((item, i) => this._expandAll(item, `${path}[${i}]`, depth + 1));
+      obj.forEach((item, i) => this._expandAll(item, `${path}[${i}]`, depth + 1))
     } else {
       for (const k of Object.keys(obj)) {
-        this._expandAll(obj[k], path ? `${path}.${k}` : k, depth + 1);
+        this._expandAll(obj[k], path ? `${path}.${k}` : k, depth + 1)
       }
     }
   }
 
   _render() {
-    const root = this._result?.patch?.root ?? this._result?.root ?? this._result;
-    const warnings = this._result?.warnings ?? [];
-    const nodeCount = root?.nodes?.length ?? 0;
-    const connCount = root?.connections?.length ?? 0;
+    const root = this._result?.patch?.root ?? this._result?.root ?? this._result
+    const warnings = this._result?.warnings ?? []
+    const nodeCount = root?.nodes?.length ?? 0
+    const connCount = root?.connections?.length ?? 0
 
     this.shadowRoot.innerHTML = `
       <div class="header">
@@ -198,193 +204,202 @@ class PdAstViewer extends HTMLElement {
         <button class="collapse-all">Collapse</button>
       </div>
       <div class="tree-root" role="tree"></div>
-    `;
+    `
 
     this.shadowRoot.querySelector('.expand-all').onclick = () => {
-      this._expandAll(this._result, '', 0);
-      this._renderTree();
-    };
+      this._expandAll(this._result, '', 0)
+      this._renderTree()
+    }
     this.shadowRoot.querySelector('.collapse-all').onclick = () => {
-      this._expandedPaths = new Set(['']);
-      this._renderTree();
-    };
+      this._expandedPaths = new Set([''])
+      this._renderTree()
+    }
 
-    this._renderTree();
+    this._renderTree()
   }
 
   _renderTree() {
-    const treeRoot = this.shadowRoot.querySelector('.tree-root');
-    if (!treeRoot) return;
+    const treeRoot = this.shadowRoot.querySelector('.tree-root')
+    if (!treeRoot) return
 
     if (!this._result) {
-      treeRoot.innerHTML = '<div class="empty">No AST loaded</div>';
-      return;
+      treeRoot.innerHTML = '<div class="empty">No AST loaded</div>'
+      return
     }
 
-    treeRoot.innerHTML = '';
-    this._buildNodes(this._result, '', 0, treeRoot, null);
+    treeRoot.innerHTML = ''
+    this._buildNodes(this._result, '', 0, treeRoot, null)
   }
 
   _buildNodes(obj, path, depth, container, keyLabel) {
     // Treat JS undefined the same as null (serde-wasm-bindgen maps Option::None → undefined)
-    if (obj === undefined) obj = null;
+    if (obj === undefined) obj = null
     if (Array.isArray(obj)) {
-      this._buildArray(obj, path, depth, container, keyLabel);
+      this._buildArray(obj, path, depth, container, keyLabel)
     } else if (obj !== null && typeof obj === 'object') {
-      this._buildObject(obj, path, depth, container, keyLabel);
+      this._buildObject(obj, path, depth, container, keyLabel)
     } else {
-      this._buildLeaf(obj, path, depth, container, keyLabel);
+      this._buildLeaf(obj, path, depth, container, keyLabel)
     }
   }
 
   _buildObject(obj, path, depth, container, keyLabel) {
-    const keys = Object.keys(obj);
-    const isExpandable = keys.length > 0;
-    const isOpen = this._expandedPaths.has(path);
+    const keys = Object.keys(obj)
+    const isExpandable = keys.length > 0
+    const isOpen = this._expandedPaths.has(path)
 
     // Special: if this object has a string `kind` field, show a badge.
     // Only treat it as a badge discriminant when it's a plain string
     // (not a nested NodeKind object like { kind: "obj", name: "osc~", ... }).
-    const kind    = typeof obj.kind === 'string' ? obj.kind : null;
-    const objName = typeof obj.name === 'string' ? obj.name : null;
+    const kind = typeof obj.kind === 'string' ? obj.kind : null
+    const objName = typeof obj.name === 'string' ? obj.name : null
 
     const row = this._makeRow(depth, keyLabel, isExpandable, isOpen, () => {
-      if (isOpen) this._expandedPaths.delete(path);
-      else        this._expandedPaths.add(path);
-      this._renderTree();
-    });
+      if (isOpen) this._expandedPaths.delete(path)
+      else this._expandedPaths.add(path)
+      this._renderTree()
+    })
 
     // Inline summary / badges
-    const summary = document.createElement('span');
-    summary.style.color = 'var(--pd-text-dim)';
+    const summary = document.createElement('span')
+    summary.style.color = 'var(--pd-text-dim)'
 
     if (kind) {
-      const badge = document.createElement('span');
-      const [cls] = nodeBadge(kind) ?? ['badge-obj'];
+      const badge = document.createElement('span')
+      const [cls] = nodeBadge(kind) ?? ['badge-obj']
       // Colour-code signal vs control for obj nodes
       if (kind === 'obj' && objName) {
-        badge.className = `badge ${isSignalName(objName) ? 'badge-sig' : 'badge-ctrl'}`;
+        badge.className = `badge ${isSignalName(objName) ? 'badge-sig' : 'badge-ctrl'}`
       } else {
-        badge.className = `badge ${cls}`;
+        badge.className = `badge ${cls}`
       }
-      badge.textContent = objName ? `${kind}: ${objName}` : kind;
-      summary.appendChild(badge);
+      badge.textContent = objName ? `${kind}: ${objName}` : kind
+      summary.appendChild(badge)
     } else {
-      summary.textContent = isOpen ? '{' : `{ ${keys.length} fields }`;
+      summary.textContent = isOpen ? '{' : `{ ${keys.length} fields }`
     }
-    row.appendChild(summary);
-    container.appendChild(row);
+    row.appendChild(summary)
+    container.appendChild(row)
 
-    if (!isExpandable) return;
+    if (!isExpandable) return
 
-    const childContainer = document.createElement('div');
-    childContainer.className = `children${isOpen ? '' : ' collapsed'}`;
-    container.appendChild(childContainer);
+    const childContainer = document.createElement('div')
+    childContainer.className = `children${isOpen ? '' : ' collapsed'}`
+    container.appendChild(childContainer)
 
     if (isOpen) {
       for (const k of keys) {
-        const childPath = path ? `${path}.${k}` : k;
-        this._buildNodes(obj[k] ?? null, childPath, depth + 1, childContainer, k);
+        const childPath = path ? `${path}.${k}` : k
+        this._buildNodes(obj[k] ?? null, childPath, depth + 1, childContainer, k)
       }
     }
   }
 
   _buildArray(arr, path, depth, container, keyLabel) {
-    const isExpandable = arr.length > 0;
-    const isOpen = this._expandedPaths.has(path);
+    const isExpandable = arr.length > 0
+    const isOpen = this._expandedPaths.has(path)
 
     const row = this._makeRow(depth, keyLabel, isExpandable, isOpen, () => {
-      if (isOpen) this._expandedPaths.delete(path);
-      else        this._expandedPaths.add(path);
-      this._renderTree();
-    });
+      if (isOpen) this._expandedPaths.delete(path)
+      else this._expandedPaths.add(path)
+      this._renderTree()
+    })
 
-    const summary = document.createElement('span');
-    summary.style.color = 'var(--pd-text-dim)';
-    summary.textContent = isOpen ? '[' : `[ ${arr.length} items ]`;
-    row.appendChild(summary);
-    container.appendChild(row);
+    const summary = document.createElement('span')
+    summary.style.color = 'var(--pd-text-dim)'
+    summary.textContent = isOpen ? '[' : `[ ${arr.length} items ]`
+    row.appendChild(summary)
+    container.appendChild(row)
 
-    if (!isExpandable) return;
+    if (!isExpandable) return
 
-    const childContainer = document.createElement('div');
-    childContainer.className = `children${isOpen ? '' : ' collapsed'}`;
-    container.appendChild(childContainer);
+    const childContainer = document.createElement('div')
+    childContainer.className = `children${isOpen ? '' : ' collapsed'}`
+    container.appendChild(childContainer)
 
     if (isOpen) {
       arr.forEach((item, i) => {
-        this._buildNodes(item, `${path}[${i}]`, depth + 1, childContainer, String(i));
-      });
+        this._buildNodes(item, `${path}[${i}]`, depth + 1, childContainer, String(i))
+      })
     }
   }
 
   _buildLeaf(val, path, depth, container, keyLabel) {
-    const row = this._makeRow(depth, keyLabel, false, false, null);
-    const span = document.createElement('span');
+    const row = this._makeRow(depth, keyLabel, false, false, null)
+    const span = document.createElement('span')
 
     if (val === null || val === undefined) {
-      span.className = 'val-null'; span.textContent = 'null';
+      span.className = 'val-null'
+      span.textContent = 'null'
     } else if (typeof val === 'boolean') {
-      span.className = 'val-bool'; span.textContent = String(val);
+      span.className = 'val-bool'
+      span.textContent = String(val)
     } else if (typeof val === 'number') {
-      span.className = 'val-num'; span.textContent = String(val);
+      span.className = 'val-num'
+      span.textContent = String(val)
     } else {
       // String — special-case 'kind' and 'type' fields
-      const isDiscriminant = keyLabel === 'kind' || keyLabel === 'type';
-      span.className = isDiscriminant ? 'val-key' : 'val-str';
-      span.textContent = isDiscriminant ? val : `"${val}"`;
+      const isDiscriminant = keyLabel === 'kind' || keyLabel === 'type'
+      span.className = isDiscriminant ? 'val-key' : 'val-str'
+      span.textContent = isDiscriminant ? val : `"${val}"`
     }
 
-    row.appendChild(span);
+    row.appendChild(span)
 
     // Make clickable for non-trivial leaf paths
     if (path.includes('nodes') || path.includes('connections')) {
-      row.classList.add('clickable');
+      row.classList.add('clickable')
       row.addEventListener('click', () => {
-        this.dispatchEvent(new CustomEvent('pd-node-click', {
-          detail: { path: path.split('.'), value: val },
-          bubbles: true, composed: true
-        }));
-      });
+        this.dispatchEvent(
+          new CustomEvent('pd-node-click', {
+            detail: { path: path.split('.'), value: val },
+            bubbles: true,
+            composed: true
+          })
+        )
+      })
     }
 
-    container.appendChild(row);
+    container.appendChild(row)
   }
 
   _makeRow(depth, keyLabel, expandable, isOpen, toggleFn) {
-    const row = document.createElement('div');
-    row.className = 'tree-node';
-    row.style.setProperty('--depth', depth);
-    row.setAttribute('role', expandable ? 'treeitem' : 'none');
-    if (expandable) row.setAttribute('aria-expanded', isOpen);
+    const row = document.createElement('div')
+    row.className = 'tree-node'
+    row.style.setProperty('--depth', depth)
+    row.setAttribute('role', expandable ? 'treeitem' : 'none')
+    if (expandable) row.setAttribute('aria-expanded', isOpen)
 
     // Toggle
-    const toggle = document.createElement('i');
-    toggle.className = `toggle${expandable ? '' : ' leaf'}`;
-    toggle.setAttribute('aria-hidden', 'true');
-    toggle.textContent = expandable ? (isOpen ? '▾' : '▸') : ' ';
+    const toggle = document.createElement('i')
+    toggle.className = `toggle${expandable ? '' : ' leaf'}`
+    toggle.setAttribute('aria-hidden', 'true')
+    toggle.textContent = expandable ? (isOpen ? '▾' : '▸') : ' '
     if (expandable && toggleFn) {
-      toggle.style.cursor = 'pointer';
-      toggle.addEventListener('click', e => { e.stopPropagation(); toggleFn(); });
-      row.addEventListener('click', toggleFn);
-      row.classList.add('clickable');
+      toggle.style.cursor = 'pointer'
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation()
+        toggleFn()
+      })
+      row.addEventListener('click', toggleFn)
+      row.classList.add('clickable')
     }
-    row.appendChild(toggle);
+    row.appendChild(toggle)
 
     // Key label
     if (keyLabel !== null) {
-      const key = document.createElement('span');
-      key.className = 'key';
-      key.textContent = keyLabel;
-      const colon = document.createElement('span');
-      colon.className = 'colon';
-      colon.textContent = ':';
-      row.appendChild(key);
-      row.appendChild(colon);
+      const key = document.createElement('span')
+      key.className = 'key'
+      key.textContent = keyLabel
+      const colon = document.createElement('span')
+      colon.className = 'colon'
+      colon.textContent = ':'
+      row.appendChild(key)
+      row.appendChild(colon)
     }
 
-    return row;
+    return row
   }
 }
 
-customElements.define('pd-ast-viewer', PdAstViewer);
+customElements.define('pd-ast-viewer', PdAstViewer)

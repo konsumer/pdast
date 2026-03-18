@@ -6,6 +6,10 @@ rust-version = "1.88"
 description = "Parse PureData .pd patches into a JSON AST and emit them back"
 license = "Zlib"
 authors = ["David Konsumer (@konsumer)"]
+repository = "https://github.com/konsumer/pdast"
+homepage = "https://github.com/konsumer/pdast"
+keywords = ["puredata", "pd", "parser", "ast", "wasm"]
+categories = ["parsing", "wasm", "multimedia::audio"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

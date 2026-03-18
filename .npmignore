@@ -1,0 +1,5 @@
+# Exclude everything by default, then the "files" field in package.json
+# selects what's actually published.
+# This file exists so npm does NOT fall back to .gitignore, which would
+# exclude pdast/pkg/ (a build artifact we need in the published package).
+*

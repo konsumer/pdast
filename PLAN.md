@@ -16,11 +16,11 @@
 
 `.pd` files are plain-text, record-based. Each record ends with `;\r\n` (CRLF). Three chunk types exist:
 
-| Chunk | Role |
-|---|---|
-| `#N` | New canvas declaration (root or sub-patch) |
-| `#X` | Object, message, connection, restore, coords, etc. |
-| `#A` | Array data |
+| Chunk | Role                                               |
+| ----- | -------------------------------------------------- |
+| `#N`  | New canvas declaration (root or sub-patch)         |
+| `#X`  | Object, message, connection, restore, coords, etc. |
+| `#A`  | Array data                                         |
 
 ### 1.2 Root Canvas
 
@@ -33,11 +33,13 @@ Every `.pd` file starts with exactly one root canvas:
 ### 1.3 Sub-patch Canvas
 
 Opened inline:
+
 ```
 #N canvas <x> <y> <width> <height> <name> <open_on_load>;
 ```
 
 Closed and placed in parent:
+
 ```
 #X restore <x> <y> pd [name];
 ```
@@ -50,17 +52,17 @@ Every `#X` element that is NOT `connect` or `restore` receives an implicit seque
 
 ### 1.5 Element Types
 
-| Element | Syntax |
-|---|---|
-| `obj` | `#X obj <x> <y> <name> [args...];` |
-| `msg` | `#X msg <x> <y> [tokens...];` |
-| `floatatom` | `#X floatatom <x> <y> <width> <min> <max> <label_pos> <label> <receive> <send>;` |
-| `symbolatom` | Same as floatatom |
-| `text` | `#X text <x> <y> <comment...>;` |
-| `connect` | `#X connect <src_idx> <src_outlet> <dst_idx> <dst_inlet>;` |
-| `restore` | `#X restore <x> <y> <type> [name];` |
-| `coords` | `#X coords <x_from> <y_top> <x_to> <y_bottom> <width_px> <height_px> <gop_flag> [x_margin] [y_margin];` |
-| `#A` | `#A <start_index> <val1> <val2> ...;` |
+| Element      | Syntax                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------- |
+| `obj`        | `#X obj <x> <y> <name> [args...];`                                                                      |
+| `msg`        | `#X msg <x> <y> [tokens...];`                                                                           |
+| `floatatom`  | `#X floatatom <x> <y> <width> <min> <max> <label_pos> <label> <receive> <send>;`                        |
+| `symbolatom` | Same as floatatom                                                                                       |
+| `text`       | `#X text <x> <y> <comment...>;`                                                                         |
+| `connect`    | `#X connect <src_idx> <src_outlet> <dst_idx> <dst_inlet>;`                                              |
+| `restore`    | `#X restore <x> <y> <type> [name];`                                                                     |
+| `coords`     | `#X coords <x_from> <y_top> <x_to> <y_bottom> <width_px> <height_px> <gop_flag> [x_margin] [y_margin];` |
+| `#A`         | `#A <start_index> <val1> <val2> ...;`                                                                   |
 
 ### 1.6 IEM GUI Objects
 
@@ -139,6 +141,7 @@ pub struct ParseResult {
 ### 2.4 Serialization
 
 Use `serde` + `serde_json` for JSON. All AST types derive `Serialize` + `Deserialize`. This enables:
+
 - `serde_json::to_string(&ast)` → JSON string
 - `serde_json::from_str(json)` → AST
 - Other serde-compatible formats (MessagePack, CBOR) via feature flags later if desired
@@ -398,31 +401,32 @@ pdast/
 ### Phase 4: Examples / Code Generators
 
 #### 4.1 Roundtrip Example
+
 Parse, emit, parse again, assert equality.
 
 #### 4.2 Faust Code Generator
 
 Map PD vanilla DSP objects to Faust library functions:
 
-| PD | Faust |
-|---|---|
-| `osc~` | `os.osc` |
-| `phasor~` | `os.phasor` |
-| `noise~` | `no.noise` |
-| `*~` | `*` |
-| `+~` | `+` |
-| `lop~` | `fi.lowpass(1, freq)` |
-| `hip~` | `fi.highpass(1, freq)` |
-| `bp~` | `fi.bandpass(1, freq, q)` |
-| `dac~` | `process` output |
-| `adc~` | `process` input |
-| `inlet~` | sub-process input |
-| `outlet~` | sub-process output |
-| `line~` | `ba.line` or `si.smooth` |
-| `delread~` / `delwrite~` | `de.delay` |
-| `tabread4~` | `it.lagrangeN` or `rdtable` |
-| `metro` | `ba.pulse` |
-| Control `+`, `-`, `*`, `/` | Faust control math |
+| PD                         | Faust                       |
+| -------------------------- | --------------------------- |
+| `osc~`                     | `os.osc`                    |
+| `phasor~`                  | `os.phasor`                 |
+| `noise~`                   | `no.noise`                  |
+| `*~`                       | `*`                         |
+| `+~`                       | `+`                         |
+| `lop~`                     | `fi.lowpass(1, freq)`       |
+| `hip~`                     | `fi.highpass(1, freq)`      |
+| `bp~`                      | `fi.bandpass(1, freq, q)`   |
+| `dac~`                     | `process` output            |
+| `adc~`                     | `process` input             |
+| `inlet~`                   | sub-process input           |
+| `outlet~`                  | sub-process output          |
+| `line~`                    | `ba.line` or `si.smooth`    |
+| `delread~` / `delwrite~`   | `de.delay`                  |
+| `tabread4~`                | `it.lagrangeN` or `rdtable` |
+| `metro`                    | `ba.pulse`                  |
+| Control `+`, `-`, `*`, `/` | Faust control math          |
 
 Connections become Faust sequential (`:`) or parallel (`,`) composition. Sub-patches become Faust `component` or inline function.
 
@@ -432,20 +436,21 @@ Known challenges: control-rate vs. audio-rate paths are mixed in PD but distinct
 
 Map PD DSP objects to Teensy Audio Library C++ classes:
 
-| PD | Teensy |
-|---|---|
-| `osc~` (sine) | `AudioSynthWaveformSine` |
-| `osc~` (other wave) | `AudioSynthWaveform` |
-| `noise~` | `AudioSynthNoisePink` / `AudioSynthNoiseWhite` |
-| `*~` | `AudioEffectMultiply` |
-| `dac~` | `AudioOutputI2S` |
-| `adc~` | `AudioInputI2S` |
+| PD                      | Teensy                                            |
+| ----------------------- | ------------------------------------------------- |
+| `osc~` (sine)           | `AudioSynthWaveformSine`                          |
+| `osc~` (other wave)     | `AudioSynthWaveform`                              |
+| `noise~`                | `AudioSynthNoisePink` / `AudioSynthNoiseWhite`    |
+| `*~`                    | `AudioEffectMultiply`                             |
+| `dac~`                  | `AudioOutputI2S`                                  |
+| `adc~`                  | `AudioInputI2S`                                   |
 | `lop~` / `hip~` / `bp~` | `AudioFilterStateVariable` or `AudioFilterBiquad` |
-| Mixer (`+~` fan-in) | `AudioMixer4` |
-| Delay | `AudioEffectDelay` |
-| Reverb | `AudioEffectReverb` |
+| Mixer (`+~` fan-in)     | `AudioMixer4`                                     |
+| Delay                   | `AudioEffectDelay`                                |
+| Reverb                  | `AudioEffectReverb`                               |
 
 Generate:
+
 1. Object instantiation declarations (`AudioSynthWaveformSine osc1;`)
 2. `AudioConnection` wiring (`AudioConnection c0(osc1, 0, out1, 0);`)
 3. `setup()` function with configuration calls

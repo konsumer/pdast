@@ -49,4 +49,4 @@ export const baseCSS = `
     font-family: var(--pd-font);
     font-size: 0.85em;
   }
-`;
+`

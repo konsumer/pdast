@@ -7,7 +7,8 @@
  * by any other.
  *
  * Attributes:
- *   (none — everything is driven programmatically or via child drop zone)
+ *   wasm-url  — URL to pdast.js (default: resolves ../pdast/pdast.js relative
+ *               to this file, which works for the bundled web demo)
  *
  * Properties (read):
  *   patches   — Map<filename, string>   all loaded .pd content
@@ -31,8 +32,8 @@
  * Wrap or extend for custom UI.
  */
 
-import { baseCSS } from './pd-styles.js';
-import './pd-file-drop.js';
+import { baseCSS } from './pd-styles.js'
+import './pd-file-drop.js'
 
 const css = `
   :host { display: block; }
@@ -98,46 +99,47 @@ const css = `
     color: var(--pd-text-dim);
   }
   .empty { color: var(--pd-text-dim); font-size: 0.85em; text-align: center; padding: 0.5em; }
-`;
+`
 
 class PdLoader extends HTMLElement {
+  static observedAttributes = ['wasm-url']
+
   constructor() {
-    super();
-    this.attachShadow({ mode: 'open' });
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(baseCSS + css);
-    this.shadowRoot.adoptedStyleSheets = [sheet];
+    super()
+    this.attachShadow({ mode: 'open' })
+    const sheet = new CSSStyleSheet()
+    sheet.replaceSync(baseCSS + css)
+    this.shadowRoot.adoptedStyleSheets = [sheet]
 
     /** @type {Map<string, string>} */
-    this.patches  = new Map();
+    this.patches = new Map()
     /** @type {Map<string, object>} */
-    this.astFiles = new Map();
+    this.astFiles = new Map()
     /** @type {Map<string, string[]>} */
-    this._warnings = new Map();
+    this._warnings = new Map()
 
-    this._wasmReady = false;
-    this._parse = null;
+    this._wasmReady = false
+    this._parse = null
 
-    this._initWasm();
-    this._render();
-    this._bind();
+    this._initWasm()
+    this._render()
+    this._bind()
   }
 
   async _initWasm() {
     try {
-      // Resolve the WASM package relative to this component file so the path
-      // works at any URL prefix (local dev via live-server mount, gh-pages
-      // subpath like /pdast/, or the root).
-      const wasmUrl = new URL('../pdast/pdast.js', import.meta.url).href;
-      const mod = await import(wasmUrl);
+      // Use wasm-url attribute if provided, otherwise resolve relative to this
+      // file (works for the web demo at any URL prefix).
+      const wasmUrl = this.getAttribute('wasm-url') ?? new URL('../pdast/pdast.js', import.meta.url).href
+      const mod = await import(wasmUrl)
       // --target web builds require calling the default init() before use
       if (typeof mod.default === 'function') {
-        await mod.default();
+        await mod.default()
       }
-      this._parse = mod.parse;
-      this._wasmReady = true;
+      this._parse = mod.parse
+      this._wasmReady = true
     } catch (e) {
-      console.error('[pd-loader] WASM load failed:', e);
+      console.error('[pd-loader] WASM load failed:', e)
     }
   }
 
@@ -153,24 +155,22 @@ class PdLoader extends HTMLElement {
         </div>
         <div class="file-list" role="list"></div>
       </div>
-    `;
+    `
   }
 
   _bind() {
-    this.shadowRoot.querySelector('pd-file-drop')
-      ?.addEventListener('pd-files', e => this.addFiles(e.detail));
-    this.shadowRoot.querySelector('.clear-btn')
-      ?.addEventListener('click', () => this.clear());
+    this.shadowRoot.querySelector('pd-file-drop')?.addEventListener('pd-files', (e) => this.addFiles(e.detail))
+    this.shadowRoot.querySelector('.clear-btn')?.addEventListener('click', () => this.clear())
   }
 
   /** Read a File as text */
   _readFile(file) {
     return new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload  = () => res(r.result);
-      r.onerror = () => rej(r.error);
-      r.readAsText(file);
-    });
+      const r = new FileReader()
+      r.onload = () => res(r.result)
+      r.onerror = () => rej(r.error)
+      r.readAsText(file)
+    })
   }
 
   /**
@@ -178,88 +178,109 @@ class PdLoader extends HTMLElement {
    * @param {FileList|File[]} files
    */
   async addFiles(files) {
-    const arr = Array.from(files);
-    const allWarnings = [];
-    const newlyParsed = [];
+    const arr = Array.from(files)
+    const allWarnings = []
+    const newlyParsed = []
 
     for (const file of arr) {
       try {
-        const text = await this._readFile(file);
-        const name = file.name;
+        const text = await this._readFile(file)
+        const name = file.name
 
         if (name.endsWith('.json')) {
           // Treat as a pre-parsed AST / ParseResult
-          const obj = JSON.parse(text);
+          const obj = JSON.parse(text)
           // Accept bare Patch or ParseResult wrapper
-          const parsed = obj.patch ?? obj;
-          this.astFiles.set(name, { patch: parsed, warnings: obj.warnings ?? [] });
+          const parsed = obj.patch ?? obj
+          this.astFiles.set(name, { patch: parsed, warnings: obj.warnings ?? [] })
           if (obj.warnings?.length) {
-            this._warnings.set(name, obj.warnings.map(w => w.message));
-            allWarnings.push(...obj.warnings.map(w => `${name}: ${w.message}`));
+            this._warnings.set(
+              name,
+              obj.warnings.map((w) => w.message)
+            )
+            allWarnings.push(...obj.warnings.map((w) => `${name}: ${w.message}`))
           }
-          newlyParsed.push(name);
+          newlyParsed.push(name)
         } else {
           // Treat as a .pd patch
           // Strip directory prefix if drag-dropped
-          const shortName = name.replace(/.*[/\\]/, '');
-          this.patches.set(shortName, text);
+          const shortName = name.replace(/.*[/\\]/, '')
+          this.patches.set(shortName, text)
         }
       } catch (err) {
-        this.dispatchEvent(new CustomEvent('pd-error', {
-          detail: { file: file.name, error: err },
-          bubbles: true, composed: true
-        }));
+        this.dispatchEvent(
+          new CustomEvent('pd-error', {
+            detail: { file: file.name, error: err },
+            bubbles: true,
+            composed: true
+          })
+        )
       }
     }
 
     // Now parse all newly loaded .pd files (so abstractions can cross-reference)
     for (const [name, content] of this.patches) {
-      if (this.astFiles.has(name)) continue; // already parsed
+      if (this.astFiles.has(name)) continue // already parsed
       if (!this._wasmReady) {
         // Wait up to 3s for WASM
-        await new Promise(r => setTimeout(r, 100));
-        if (!this._wasmReady) { console.warn('[pd-loader] WASM not ready'); continue; }
+        await new Promise((r) => setTimeout(r, 100))
+        if (!this._wasmReady) {
+          console.warn('[pd-loader] WASM not ready')
+          continue
+        }
       }
       try {
-        const result = this._parse(content, n => this.patches.get(n + '.pd') ?? null);
-        this.astFiles.set(name, result);
-        newlyParsed.push(name);
+        const result = this._parse(content, (n) => this.patches.get(n + '.pd') ?? null)
+        this.astFiles.set(name, result)
+        newlyParsed.push(name)
         if (result.warnings?.length) {
-          this._warnings.set(name, result.warnings.map(w => w.message));
-          allWarnings.push(...result.warnings.map(w => `${name}: ${w.message}`));
+          this._warnings.set(
+            name,
+            result.warnings.map((w) => w.message)
+          )
+          allWarnings.push(...result.warnings.map((w) => `${name}: ${w.message}`))
         }
       } catch (err) {
-        this.dispatchEvent(new CustomEvent('pd-error', {
-          detail: { file: name, error: err },
-          bubbles: true, composed: true
-        }));
+        this.dispatchEvent(
+          new CustomEvent('pd-error', {
+            detail: { file: name, error: err },
+            bubbles: true,
+            composed: true
+          })
+        )
       }
     }
 
-    this._updateList();
-    this.dispatchEvent(new CustomEvent('pd-loaded', {
-      detail: { patches: this.patches, astFiles: this.astFiles, warnings: allWarnings },
-      bubbles: true, composed: true
-    }));
+    this._updateList()
+    this.dispatchEvent(
+      new CustomEvent('pd-loaded', {
+        detail: { patches: this.patches, astFiles: this.astFiles, warnings: allWarnings },
+        bubbles: true,
+        composed: true
+      })
+    )
 
     // Auto-select: fire pd-select for the first newly parsed file so the
     // viewer shows something immediately without requiring a manual click.
-    const firstNew = newlyParsed[0];
+    const firstNew = newlyParsed[0]
     if (firstNew) {
-      this._selectFile(firstNew);
+      this._selectFile(firstNew)
     }
   }
 
   /** Remove all loaded files */
   clear() {
-    this.patches.clear();
-    this.astFiles.clear();
-    this._warnings.clear();
-    this._updateList();
-    this.dispatchEvent(new CustomEvent('pd-loaded', {
-      detail: { patches: this.patches, astFiles: this.astFiles, warnings: [] },
-      bubbles: true, composed: true
-    }));
+    this.patches.clear()
+    this.astFiles.clear()
+    this._warnings.clear()
+    this._updateList()
+    this.dispatchEvent(
+      new CustomEvent('pd-loaded', {
+        detail: { patches: this.patches, astFiles: this.astFiles, warnings: [] },
+        bubbles: true,
+        composed: true
+      })
+    )
   }
 
   /**
@@ -268,17 +289,20 @@ class PdLoader extends HTMLElement {
    * @param {string} name
    */
   _selectFile(name) {
-    const result = this.astFiles.get(name);
-    if (!result) return;
-    this._activeFile = name;
+    const result = this.astFiles.get(name)
+    if (!result) return
+    this._activeFile = name
     // Update active highlight in list
-    this.shadowRoot.querySelectorAll('.file-item').forEach(el => {
-      el.classList.toggle('active', el.querySelector('.name')?.textContent === name);
-    });
-    this.dispatchEvent(new CustomEvent('pd-select', {
-      detail: { name, result },
-      bubbles: true, composed: true
-    }));
+    this.shadowRoot.querySelectorAll('.file-item').forEach((el) => {
+      el.classList.toggle('active', el.querySelector('.name')?.textContent === name)
+    })
+    this.dispatchEvent(
+      new CustomEvent('pd-select', {
+        detail: { name, result },
+        bubbles: true,
+        composed: true
+      })
+    )
   }
 
   /**
@@ -286,58 +310,56 @@ class PdLoader extends HTMLElement {
    * @returns {(name: string) => string | null}
    */
   getLoader() {
-    return name => this.patches.get(name + '.pd') ?? this.patches.get(name) ?? null;
+    return (name) => this.patches.get(name + '.pd') ?? this.patches.get(name) ?? null
   }
 
   _updateList() {
-    const list = this.shadowRoot.querySelector('.file-list');
-    const status = this.shadowRoot.querySelector('.status');
-    if (!list) return;
+    const list = this.shadowRoot.querySelector('.file-list')
+    const status = this.shadowRoot.querySelector('.status')
+    if (!list) return
 
-    const allNames = new Set([...this.patches.keys(), ...this.astFiles.keys()]);
-    status.textContent = allNames.size
-      ? `${allNames.size} file${allNames.size !== 1 ? 's' : ''} loaded`
-      : '';
+    const allNames = new Set([...this.patches.keys(), ...this.astFiles.keys()])
+    status.textContent = allNames.size ? `${allNames.size} file${allNames.size !== 1 ? 's' : ''} loaded` : ''
 
     if (!allNames.size) {
-      list.innerHTML = '<div class="empty">No files loaded</div>';
-      return;
+      list.innerHTML = '<div class="empty">No files loaded</div>'
+      return
     }
 
-    list.innerHTML = '';
+    list.innerHTML = ''
     for (const name of [...allNames].sort()) {
-      const isPd  = this.patches.has(name);
-      const isAst = this.astFiles.has(name);
-      const warns = this._warnings.get(name) ?? [];
+      const isPd = this.patches.has(name)
+      const isAst = this.astFiles.has(name)
+      const warns = this._warnings.get(name) ?? []
 
-      const item = document.createElement('div');
-      item.className = 'file-item';
-      item.setAttribute('role', 'listitem');
+      const item = document.createElement('div')
+      item.className = 'file-item'
+      item.setAttribute('role', 'listitem')
       item.innerHTML = `
         <span class="name" title="${name}" tabindex="0">${name}</span>
-        ${isPd  ? '<span class="badge pd">.pd</span>'  : ''}
+        ${isPd ? '<span class="badge pd">.pd</span>' : ''}
         ${isAst ? '<span class="badge ast">AST</span>' : ''}
         ${warns.length ? `<span class="warn" title="${warns.join('\n')}">⚠ ${warns.length}</span>` : ''}
         <button class="remove" title="Remove" aria-label="Remove ${name}">✕</button>
-      `;
+      `
 
       // Click name → select
-      item.querySelector('.name').addEventListener('click', () => this._selectFile(name));
-      item.querySelector('.name').addEventListener('keydown', e => {
-        if (e.key === 'Enter') e.target.click();
-      });
+      item.querySelector('.name').addEventListener('click', () => this._selectFile(name))
+      item.querySelector('.name').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') e.target.click()
+      })
 
       // Remove button
       item.querySelector('.remove').addEventListener('click', () => {
-        this.patches.delete(name);
-        this.astFiles.delete(name);
-        this._warnings.delete(name);
-        this._updateList();
-      });
+        this.patches.delete(name)
+        this.astFiles.delete(name)
+        this._warnings.delete(name)
+        this._updateList()
+      })
 
-      list.appendChild(item);
+      list.appendChild(item)
     }
   }
 }
 
-customElements.define('pd-loader', PdLoader);
+customElements.define('pd-loader', PdLoader)

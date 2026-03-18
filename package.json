@@ -1,13 +1,53 @@
 {
-  "name": "pdast-workspace",
+  "name": "pdast",
   "version": "0.1.0",
-  "description": "PureData AST tools — web viewer and development scripts",
+  "description": "Parse PureData .pd patches into a JSON AST — WASM core + web components",
   "license": "Zlib",
   "author": "David Konsumer (https://github.com/konsumer)",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/konsumer/pdast"
+  },
+  "homepage": "https://github.com/konsumer/pdast#readme",
+  "keywords": [
+    "puredata",
+    "pd",
+    "parser",
+    "ast",
+    "wasm",
+    "web-components",
+    "audio",
+    "dsp"
+  ],
+  "type": "module",
+  "main": "./node/index.js",
+  "types": "./node/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./node/index.d.ts",
+      "default": "./node/index.js"
+    },
+    "./components": "./node/components.js",
+    "./components/pd-styles": "./web/components/pd-styles.js",
+    "./components/pd-file-drop": "./web/components/pd-file-drop.js",
+    "./components/pd-loader": "./web/components/pd-loader.js",
+    "./components/pd-ast-viewer": "./web/components/pd-ast-viewer.js",
+    "./components/pd-patch-graph": "./web/components/pd-patch-graph.js",
+    "./wasm": "./pdast/pkg/pdast.js"
+  },
+  "files": [
+    "node/index.js",
+    "node/index.d.ts",
+    "node/components.js",
+    "web/components/",
+    "pdast/pkg/",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "wasm-pack build --target web pdast --features wasm-js && npx -y rimraf pdast/pkg/.gitignore",
+    "prepublishOnly": "npm run build",
     "start": "npx -y live-server web --port=4321 --no-browser --mount=/pdast:pdast/pkg",
-    "build-wasm": "wasm-pack build pdast --features wasm-js",
-    "dev": "npm run build-wasm && npm start"
+    "prestart": "npm run build",
+    "format": "npx -y prettier -w ."
   }
 }

@@ -18,7 +18,7 @@
  *   see pd-styles.js
  */
 
-import { baseCSS } from './pd-styles.js';
+import { baseCSS } from './pd-styles.js'
 
 const css = `
   :host {
@@ -49,26 +49,35 @@ const css = `
   .label { color: var(--pd-text-dim); font-size: 0.9em; }
   .label strong { color: var(--pd-accent); }
   input[type=file] { display: none; }
-`;
+`
 
 class PdFileDrop extends HTMLElement {
-  static observedAttributes = ['accept', 'multiple', 'label'];
+  static observedAttributes = ['accept', 'multiple', 'label']
 
   constructor() {
-    super();
-    this.attachShadow({ mode: 'open' });
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(baseCSS + css);
-    this.shadowRoot.adoptedStyleSheets = [sheet];
-    this._render();
-    this._bind();
+    super()
+    this.attachShadow({ mode: 'open' })
+    const sheet = new CSSStyleSheet()
+    sheet.replaceSync(baseCSS + css)
+    this.shadowRoot.adoptedStyleSheets = [sheet]
+    this._render()
+    this._bind()
   }
 
-  attributeChangedCallback() { this._render(); this._bind(); }
+  attributeChangedCallback() {
+    this._render()
+    this._bind()
+  }
 
-  get accept()   { return this.getAttribute('accept')   ?? '.pd,.json'; }
-  get multiple() { return this.hasAttribute('multiple'); }
-  get label()    { return this.getAttribute('label')    ?? 'Drop files here or click to browse'; }
+  get accept() {
+    return this.getAttribute('accept') ?? '.pd,.json'
+  }
+  get multiple() {
+    return this.hasAttribute('multiple')
+  }
+  get label() {
+    return this.getAttribute('label') ?? 'Drop files here or click to browse'
+  }
 
   _render() {
     this.shadowRoot.innerHTML = `
@@ -82,33 +91,40 @@ class PdFileDrop extends HTMLElement {
       <input type="file"
              accept="${this.accept}"
              ${this.multiple ? 'multiple' : ''}>
-    `;
+    `
   }
 
   _bind() {
-    const zone  = this.shadowRoot.querySelector('.zone');
-    const input = this.shadowRoot.querySelector('input');
-    if (!zone || !input) return;
+    const zone = this.shadowRoot.querySelector('.zone')
+    const input = this.shadowRoot.querySelector('input')
+    if (!zone || !input) return
 
-    zone.onclick    = () => input.click();
-    zone.onkeydown  = e => (e.key === 'Enter' || e.key === ' ') && input.click();
-    input.onchange  = () => this._emit(input.files);
+    zone.onclick = () => input.click()
+    zone.onkeydown = (e) => (e.key === 'Enter' || e.key === ' ') && input.click()
+    input.onchange = () => this._emit(input.files)
 
-    zone.ondragover  = e => { e.preventDefault(); zone.classList.add('over'); };
-    zone.ondragleave = ()=> zone.classList.remove('over');
-    zone.ondrop      = e => {
-      e.preventDefault();
-      zone.classList.remove('over');
-      this._emit(e.dataTransfer.files);
-    };
+    zone.ondragover = (e) => {
+      e.preventDefault()
+      zone.classList.add('over')
+    }
+    zone.ondragleave = () => zone.classList.remove('over')
+    zone.ondrop = (e) => {
+      e.preventDefault()
+      zone.classList.remove('over')
+      this._emit(e.dataTransfer.files)
+    }
   }
 
   _emit(files) {
-    if (!files?.length) return;
-    this.dispatchEvent(new CustomEvent('pd-files', {
-      detail: files, bubbles: true, composed: true
-    }));
+    if (!files?.length) return
+    this.dispatchEvent(
+      new CustomEvent('pd-files', {
+        detail: files,
+        bubbles: true,
+        composed: true
+      })
+    )
   }
 }
 
-customElements.define('pd-file-drop', PdFileDrop);
+customElements.define('pd-file-drop', PdFileDrop)

@@ -111,7 +111,7 @@ function nodeLabel(node) {
     case 'msg':        return k.messages?.flat().map(t => t.value ?? '').join(' ') || '(msg)';
     case 'float_atom': return 'float';
     case 'symbol_atom':return 'symbol';
-    case 'text':       return k.content?.slice(0, 30) ?? '';
+    case 'text':       return k.content ?? '';
     case 'sub_patch':  return `[pd ${k.name}]`;
     case 'graph':      return '[graph]';
     case 'array':      return `[array ${k.name}]`;
@@ -121,7 +121,7 @@ function nodeLabel(node) {
       const lbl = k.label ?? '';
       return lbl ? `${gk}: ${lbl}` : gk;
     }
-    default: return JSON.stringify(k).slice(0, 30);
+    default: return JSON.stringify(k);
   }
 }
 

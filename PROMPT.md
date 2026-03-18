@@ -1,3 +1,5 @@
+> This was made collaboratively with Claude Opus 4.6. This was my initial prompt:
+
 I want a small/simple rust library that can turn a puredata patch into a JSON AST, similar to how javascript/jsx/markdown parsers work.
 
 My ultimate goal is to generate code from puredata patches, similar to HVCC, but I feel like HVCC is a bit convoluted & complicated, and hard to expand, and I have other code-targets it doesn't support.
@@ -22,3 +24,5 @@ Some good example AST output targets:
 - AST back to puredata (export, rountrip)
 - Faust, which can generate many other formats (native standalone/puredata/vst/ladspa/etc)
 - Teensy Audio Library (C code)
+
+Store the findings of your research and plan for development in PLAN.md.

@@ -249,37 +249,75 @@ Each PD object type has a `.dsp` template file. The convention:
 ```faust
 // comment / metadata
 import("stdfaust.lib");   // optional
-pdobj = <faust-expression>;
+pdobj[(params)] = <faust-expression>;
 ```
 
-`parse_template` extracts the expression after `pdobj =` up to the first unescaped `;` (respecting parenthesis nesting). If no `pdobj` definition is found, the entire file is used as the expression.
+`parse_template` extracts everything after `pdobj` (including the optional parameter list) up to the first `;` at depth 0. This preserves parameter declarations like `(ms) = ba.pulse(...)` intact.
 
-`TemplateResolver` caches resolved templates. User dirs are searched before the built-in lib. The built-in lib is embedded at compile time via `include_str!` macros in `builtin_lib()`.
+The helper is emitted as:
 
-Object names are sanitized to valid Faust identifiers with `sanitize_name`: `~` → `s`, `+` → `p`, `-` → `m`, `*` → `x`, `/` → `d`, `.` → `_`. This means `osc~` becomes `pd_oscs`, `*~` becomes `pd_xs`, etc.
+```faust
+pd_metro(ms) = ba.pulse(max(1, int(ba.ms2samp(ms))));
+```
 
-### Signal graph analysis
+At call sites, PD creation arguments are appended as partial application: `pd_metro(500)`.
 
-The generator only processes audio-rate nodes. `node_is_signal` returns true for:
-- Any `NodeKind::Obj` whose name ends in `~`
-- Any `NodeKind::Gui` (GUI controls feed into signal paths)
-- Any `NodeKind::SubPatch` whose inner canvas contains an `outlet~` node
+`TemplateResolver` caches resolved templates. User dirs are searched before the built-in lib. The built-in lib covers ~60 objects and is embedded at compile time via `include_str!` macros in `builtin_lib()`.
 
-Connections are filtered to only those between signal nodes.
+Object names are sanitized to valid Faust identifiers with `sanitize_name`. Operators use explicit mappings: `*` → `mul`, `/` → `div`, `>` → `gt`, etc. Tilde suffix: `~` → `s` (so `osc~` → `pd_oscs`).
 
-`topo_sort` implements Kahn's BFS algorithm. Cycle nodes (feedback loops) are appended after the BFS result — they will not produce correct Faust code but at least won't panic.
+### Unified graph model
 
-### Process expression construction
+The generator processes **all nodes** — both audio-rate and control-rate — in a single unified graph. There is no pre-filtering by `is_signal`. Every PD node (objects, GUI, message boxes, atoms) that can contribute a value participates.
 
-`build_process` assigns each signal node a Faust expression string by propagating expressions from sources to sinks:
+`topo_sort` implements Kahn's BFS algorithm over all active node ids. Cycle nodes (feedback loops — e.g. `float` fed by `+`) are appended after the BFS result; they produce Faust code with implicit one-sample feedback delay which is correct for audio.
 
-- **No incoming connections**: expression is just `pd_<name>(args)` — a source.
-- **One incoming connection**: `<src_expr> : pd_<name>(args)` — sequential composition.
-- **Multiple incoming connections**: `(<src1>, <src2>) :> pd_<name>(args)` — merge composition.
+### Named `with { }` bindings
 
-Sink nodes (those with no outgoing connections) are collected and joined with `,` if multiple.
+Each node in topological order gets a named Faust binding `n<id>`:
 
-**Known limitation**: if a node's output fans out to multiple downstream nodes, its expression string gets duplicated in the result. This is semantically valid Faust (no shared state for pure processors) but produces redundant computation. A proper solution would use Faust `letrec` or `with` to name intermediate results, or emit a separate helper function per node instance.
+```faust
+process = n9
+with {
+  n0 = pd_metro(500);
+  n1 = n2 : pd_float(0);
+  n2 = n1 : pd_p(1);
+  ...
+};
+```
+
+This means fan-out connections (one outlet → multiple inlets) do not duplicate computation — every node is computed exactly once. The `with { }` pattern is idiomatic Faust for this purpose.
+
+### Multi-outlet nodes
+
+For nodes that produce more than one output (e.g. `moses` → 2 outlets, `notein` → 3), the generator selects the correct outlet using:
+
+```faust
+(src_expr <: si.bus(N)) : ba.selector(outlet_idx, N)
+```
+
+### send / receive bus resolution
+
+`collect_bus_map` scans the canvas for all `[send X]`, `[receive X]`, and `[value X]` nodes and groups them by name. For each pair:
+
+- The **send** node is emitted as `_` (passthrough) — its binding holds the value.
+- The **receive** node's RHS is set directly to the send node's binding name.
+- A send node paired with a receive is excluded from the sink list (it is an internal bus, not an output).
+- An unpaired receive emits `nentry("name", ...)` — a UI control with the same name.
+
+Cross-canvas send/receive (different canvases or abstractions) is not yet supported.
+
+### Node RHS construction (`node_rhs`)
+
+The RHS for each binding is built by `node_rhs`:
+
+- `NodeKind::Gui` → `gui_to_faust` → Faust UI primitive
+- `NodeKind::Msg` → first numeric atom as a constant
+- `NodeKind::FloatAtom` / `SymbolAtom` → `nentry`
+- `NodeKind::SubPatch::Inline` → the inner `process = ...` expression is extracted and inlined
+- `NodeKind::Obj` → `apply_fn` → `pd_<name>(creation_args)` wired with incoming connections
+
+Incoming connections are sorted by inlet index. For a single input: `src : fn`. For multiple: `(src1, src2) : fn`.
 
 ### GUI → Faust UI mapping
 
@@ -290,7 +328,7 @@ Sink nodes (those with no outgoing connections) are collected and joined with `,
 | `nbx` | `nentry("label", default, min, max, 0.001)` |
 | `bng` | `button("label")` |
 | `hradio`, `vradio` | `nentry("label", default, min, max, 1)` |
-| `vu`, `cnv` | skipped (output/decorative) |
+| `vu`, `cnv` | comment-only (decorative) |
 
 ---
 
@@ -300,8 +338,7 @@ Sink nodes (those with no outgoing connections) are collected and joined with `,
 
 - **Cycle detection in abstraction loading**: the loader `Fn` can't mutate a `HashSet` to track in-progress loads. If a patch `A.pd` uses abstraction `B.pd` which uses `A.pd`, the parser will infinite-recurse. Fix: use a `RefCell<HashSet>` or convert the loader signature to pass a context parameter.
 - **`#X declare`**: PD's `[declare -path ...]` and `[declare -lib ...]` are not parsed or acted on. They appear as `NodeKind::Obj { name: "declare", ... }`. The pd2ast CLI's `-p` flags are the intended substitute.
-- **Multi-outlet object records**: Some PD internals (e.g. `catch~`, `send~`) produce multi-record output. These are parsed as plain `Obj` nodes without semantic analysis.
-- **`$0`-expanded names**: symbol atoms containing `$0-myname` are stored literally with `Token::DollarZero` in the concatenated position; expansion is not performed at parse time.
+- **`$0`-expanded names**: symbol atoms containing `$0-myname` are stored literally with `Token::DollarZero`; expansion is not performed at parse time.
 
 ### Emitter
 
@@ -310,12 +347,11 @@ Sink nodes (those with no outgoing connections) are collected and joined with `,
 
 ### Faust generator
 
-- **Fan-out duplication**: described above. Future fix: emit per-node-instance helper functions.
-- **Control-rate objects**: `metro`, `timer`, `delay`, `route`, `select`, `pack`, `unpack`, `moses`, etc. have no Faust analogue and are currently silently skipped. A warning is emitted for objects with no template.
-- **`delwrite~`/`delread~` pairing**: these are stored as separate opaque `Obj` nodes. The generator does not pair them or construct a shared delay line — each gets an independent stub. Manual fixup is needed.
+- **`delwrite~`/`delread~` pairing**: these are treated as independent nodes. Pair them manually by sharing a `de.delay` instance in a custom template.
 - **`tabread4~` / arrays**: the generator emits a passthrough stub. A full implementation would collect `Array` nodes from the AST, emit `rdtable` declarations, and wire `tabread4~` to them.
-- **Sub-patch recursion**: the Faust generator operates on the root canvas only. Sub-patches and resolved abstractions are not recursively expanded. Sub-patches that contain `outlet~` are flagged as signal nodes but their internal graph is ignored. Full support requires recursive expansion before code generation.
-- **`inlet~`/`outlet~` in sub-patches**: when a sub-patch is encountered in the signal graph, a proper generator would inline its internal graph (after substituting creation arguments for `$1`, `$2`, etc.). This is not yet implemented.
+- **Sub-patch creation argument substitution**: `$1`, `$2` inside an inlined abstraction are not substituted with the creation arguments supplied at the call site. The `args` field on `NodeKind::SubPatch` holds the values but the substitution step is not yet implemented.
+- **Cross-canvas send/receive**: `[send X]` in one canvas and `[receive X]` in another (or in a sub-patch) are not wired together. Each canvas is processed independently.
+- **`expr` / `expr~`**: PD's C-style expression language is not parsed. These nodes emit a passthrough stub and a warning.
 
 ### WASM (`pdast/src/wasm.rs`)
 

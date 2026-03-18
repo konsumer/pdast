@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pdast viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #1e1e2e;
+      --surface: #2a2a3e;
+      --border:  #44445a;
+      --text:    #cdd6f4;
+      --dim:     #7f849c;
+      --accent:  #89b4fa;
+      --accent2: #a6e3a1;
+      --warn:    #f9e2af;
+      --error:   #f38ba8;
+      color-scheme: dark;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, sans-serif;
+      font-size: 14px;
+    }
+
+    /* ── Layout ── */
+    body {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      grid-template-columns: 280px 1fr;
+      grid-template-areas:
+        "topbar topbar"
+        "sidebar main";
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ── */
+    #topbar {
+      grid-area: topbar;
+      display: flex;
+      align-items: center;
+      gap: 0.75em;
+      padding: 0.5em 1em;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #topbar h1 {
+      font-size: 1em;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: var(--accent);
+    }
+    #topbar h1 span { color: var(--dim); font-weight: 400; }
+    #topbar nav {
+      display: flex;
+      gap: 0.25em;
+      margin-left: auto;
+    }
+    #topbar nav button {
+      padding: 0.25em 0.7em;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.85em;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    #topbar nav button:hover    { background: var(--border); }
+    #topbar nav button.active   { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      grid-area: sidebar;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    #sidebar pd-loader {
+      flex: 1;
+      overflow: auto;
+      padding: 0.75em;
+    }
+
+    /* ── Main panel ── */
+    #main {
+      grid-area: main;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Panel tabs ── */
+    .panel-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .panel-tab {
+      padding: 0.4em 1em;
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--dim);
+      cursor: pointer;
+      font-size: 0.85em;
+      transition: color 0.1s, border-color 0.1s;
+    }
+    .panel-tab:hover   { color: var(--text); }
+    .panel-tab.active  { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Panels ── */
+    .panel {
+      flex: 1;
+      display: none;
+      overflow: hidden;
+      position: relative;
+    }
+    .panel.active { display: flex; flex-direction: column; }
+
+    pd-ast-viewer, pd-patch-graph {
+      flex: 1;
+      min-height: 0;
+      border-radius: 0;
+      border: none;
+    }
+
+    /* hidden attribute hides completely */
+    [hidden] { display: none !important; }
+
+    /* ── Warnings bar ── */
+    #warn-bar {
+      padding: 0.4em 1em;
+      background: color-mix(in srgb, var(--warn) 15%, var(--surface));
+      color: var(--warn);
+      font-size: 0.82em;
+      border-top: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+      display: none;
+    }
+    #warn-bar.visible { display: block; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75em;
+      color: var(--dim);
+    }
+    .empty-state .icon { font-size: 3em; }
+    .empty-state p { font-size: 0.9em; }
+
+    /* ── Node detail drawer ── */
+    #node-detail {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      overflow: auto;
+      max-height: 180px;
+      font-size: 0.8em;
+      font-family: 'JetBrains Mono', monospace;
+      display: none;
+      padding: 0.5em 1em;
+    }
+    #node-detail.visible { display: block; }
+    #node-detail pre { white-space: pre-wrap; color: var(--text); }
+    #node-detail .close {
+      float: right;
+      background: none;
+      border: none;
+      color: var(--dim);
+      cursor: pointer;
+      font-size: 1em;
+      padding: 0;
+      line-height: 1;
+    }
+    #node-detail .close:hover { color: var(--error); }
+  </style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>pdast <span>viewer</span></h1>
+  <nav>
+    <button class="view-btn active" data-panel="graph">Graph</button>
+    <button class="view-btn" data-panel="ast">AST</button>
+  </nav>
+</div>
+
+<aside id="sidebar">
+  <pd-loader id="loader"></pd-loader>
+</aside>
+
+<main id="main">
+
+  <div class="panel-tabs" id="panel-tabs" hidden></div>
+
+  <!-- Graph panel -->
+  <div class="panel active" id="panel-graph">
+    <div class="empty-state" id="graph-empty">
+      <span class="icon">🎛️</span>
+      <p>Load a .pd patch or .json AST file using the sidebar</p>
+      <p style="font-size:0.8em;color:var(--dim)">
+        Multiple files can be loaded at once — abstractions are resolved automatically
+      </p>
+    </div>
+    <pd-patch-graph id="graph-view" style="display:none"></pd-patch-graph>
+  </div>
+
+  <!-- AST panel -->
+  <div class="panel" id="panel-ast">
+    <div class="empty-state" id="ast-empty">
+      <span class="icon">🌲</span>
+      <p>Load a .pd patch or .json AST file to inspect the AST</p>
+    </div>
+    <pd-ast-viewer id="ast-view" style="display:none"></pd-ast-viewer>
+  </div>
+
+  <div id="warn-bar"></div>
+
+  <div id="node-detail">
+    <button class="close" id="detail-close" aria-label="Close detail">✕</button>
+    <pre id="detail-content"></pre>
+  </div>
+</main>
+
+<script type="module">
+import './components/pd-loader.js';
+import './components/pd-ast-viewer.js';
+import './components/pd-patch-graph.js';
+
+const loader   = document.getElementById('loader');
+const graphView = document.getElementById('graph-view');
+const graphEmpty= document.getElementById('graph-empty');
+const astView  = document.getElementById('ast-view');
+const astEmpty = document.getElementById('ast-empty');
+const warnBar  = document.getElementById('warn-bar');
+const nodeDetail = document.getElementById('node-detail');
+const detailContent = document.getElementById('detail-content');
+
+// ── Panel switching ───────────────────────────────────────────────────────────
+document.querySelectorAll('.view-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(`panel-${btn.dataset.panel}`).classList.add('active');
+  });
+});
+
+// ── File selection → display ──────────────────────────────────────────────────
+let currentResult = null;
+let currentName   = null;
+
+function displayResult(name, result) {
+  currentResult = result;
+  currentName   = name;
+
+  const root = result?.patch?.root ?? result?.root ?? result;
+  const warnings = result?.warnings ?? [];
+
+  // Graph view
+  graphView.canvas = root;
+  graphView.title  = name;
+  graphView.style.display = '';
+  graphEmpty.style.display = 'none';
+
+  // AST view
+  astView.result   = result;
+  astView.setAttribute('filename', name);
+  astView.style.display = '';
+  astEmpty.style.display = 'none';
+
+  // Warnings bar
+  if (warnings.length) {
+    warnBar.textContent = `⚠ ${warnings.length} warning${warnings.length !== 1 ? 's' : ''}: ` +
+      warnings.slice(0, 3).map(w => w.message).join(' · ') +
+      (warnings.length > 3 ? ` … (+${warnings.length - 3} more)` : '');
+    warnBar.classList.add('visible');
+  } else {
+    warnBar.classList.remove('visible');
+  }
+}
+
+// Patch selected from sidebar
+loader.addEventListener('pd-select', e => {
+  const { name, result } = e.detail;
+  displayResult(name, result);
+});
+
+// Error display
+loader.addEventListener('pd-error', e => {
+  warnBar.textContent = `✕ Error loading "${e.detail.file}": ${e.detail.error?.message ?? e.detail.error}`;
+  warnBar.classList.add('visible');
+});
+
+// ── Node click → detail drawer ────────────────────────────────────────────────
+function showNodeDetail(data) {
+  detailContent.textContent = JSON.stringify(data, null, 2);
+  nodeDetail.classList.add('visible');
+}
+
+graphView.addEventListener('pd-node-click', e => showNodeDetail(e.detail.node));
+astView.addEventListener('pd-node-click',   e => showNodeDetail(e.detail));
+
+document.getElementById('detail-close').addEventListener('click', () => {
+  nodeDetail.classList.remove('visible');
+});
+
+// ── Drag and drop onto body ───────────────────────────────────────────────────
+document.body.addEventListener('dragover', e => e.preventDefault());
+document.body.addEventListener('drop', e => {
+  e.preventDefault();
+  loader.addFiles(e.dataTransfer.files);
+});
+</script>
+
+</body>
+</html>

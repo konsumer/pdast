@@ -1,0 +1,5 @@
+[toolchain]
+# edition 2024 requires 1.85+; let-chain syntax (let x = ... && let y = ...)
+# requires 1.88+. Pin to stable channel with no specific version so that
+# rustup always uses the current stable release.
+channel = "stable"

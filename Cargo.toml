@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "pdast",
+    "pd2ast",
+    "pdast2faust", "ast2pd",
+]
+resolver = "2"

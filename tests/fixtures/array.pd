@@ -1,0 +1,10 @@
+#N canvas 0 50 450 300 12;
+#X obj 30 27 osc~ 440;
+#X obj 30 60 dac~;
+#N canvas 0 0 200 140 graph1 0;
+#X array mywave 8 float 3;
+#A 0 0 0.5 1 0.5 0 -0.5 -1 -0.5;
+#X coords 0 1 7 -1 200 140 0;
+#X restore 200 50 graph;
+#X connect 0 0 1 0;
+#X connect 0 0 1 1;

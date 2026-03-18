@@ -1,0 +1,8 @@
+#N canvas 0 50 450 300 12;
+#X obj 30 27 osc~ 440;
+#X obj 30 60 *~ 0.5;
+#X obj 30 100 dac~;
+#X text 10 10 Simple sine wave - osc~ into dac~;
+#X connect 0 0 1 0;
+#X connect 1 0 2 0;
+#X connect 1 0 2 1;

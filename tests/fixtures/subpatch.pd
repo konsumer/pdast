@@ -1,0 +1,13 @@
+#N canvas 0 50 450 300 12;
+#X obj 30 50 osc~ 440;
+#N canvas 0 0 200 150 gain 0;
+#X obj 20 30 inlet~;
+#X obj 20 60 *~ 0.5;
+#X obj 20 90 outlet~;
+#X connect 0 0 1 0;
+#X connect 1 0 2 0;
+#X restore 30 80 pd gain;
+#X obj 30 120 dac~;
+#X connect 0 0 1 0;
+#X connect 1 0 2 0;
+#X connect 1 0 2 1;

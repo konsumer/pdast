@@ -1,0 +1,11 @@
+[package]
+name = "ast2pd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "CLI: convert pdast JSON AST back to a PureData .pd patch"
+license = "MIT"
+
+[dependencies]
+pdast = { path = "../pdast" }
+clap = { version = "4", features = ["derive"] }

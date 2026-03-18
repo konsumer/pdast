@@ -125,7 +125,11 @@ class PdLoader extends HTMLElement {
 
   async _initWasm() {
     try {
-      const mod = await import('/pdast/pdast.js');
+      // Resolve the WASM package relative to this component file so the path
+      // works at any URL prefix (local dev via live-server mount, gh-pages
+      // subpath like /pdast/, or the root).
+      const wasmUrl = new URL('../pdast/pdast.js', import.meta.url).href;
+      const mod = await import(wasmUrl);
       // --target web builds require calling the default init() before use
       if (typeof mod.default === 'function') {
         await mod.default();

@@ -262,3 +262,32 @@ fn test_json_pd_roundtrip_array() {
 fn test_json_pd_roundtrip_gui() {
     json_roundtrip("gui.pd");
 }
+
+// ── Regression: plugdata hex color format (#RRGGBB) ───────────────────────────
+
+#[test]
+fn test_plugdata_hex_colors() {
+    // plugdata writes GUI colors as #RRGGBB hex strings.
+    // The '#' character must NOT be treated as a record starter mid-body.
+    let src = fixture("from_plugdata.pd");
+    let result = parse_patch_no_loader(&src).unwrap();
+    let root = &result.patch.root;
+
+    // All 4 nodes must parse: osc~, mtof, dac~, hsl (gui)
+    assert_eq!(
+        root.nodes.len(),
+        4,
+        "hex-color hsl should parse as a gui node"
+    );
+
+    let gui_node = root
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.kind, NodeKind::Gui(_)));
+    assert!(
+        gui_node.is_some(),
+        "hsl with hex colors must produce a Gui node"
+    );
+
+    assert!(result.warnings.is_empty(), "no warnings expected");
+}

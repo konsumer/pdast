@@ -1,0 +1,13 @@
+{
+  "name": "pdast-workspace",
+  "version": "0.1.0",
+  "description": "PureData AST tools — web viewer and development scripts",
+  "license": "Zlib",
+  "author": "David Konsumer (https://github.com/konsumer)",
+  "private": true,
+  "scripts": {
+    "start": "npx -y live-server web --port=4321 --no-browser --mount=/pdast:pdast/pkg",
+    "build-wasm": "wasm-pack build pdast --features wasm-js",
+    "dev": "npm run build-wasm && npm start"
+  }
+}

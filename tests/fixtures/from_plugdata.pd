@@ -1,0 +1,9 @@
+#N canvas 827 239 734 565 12;
+#X obj 262 180 osc~;
+#X obj 262 117 mtof;
+#X obj 262 247 dac~;
+#X obj 240 74 hsl 128 17 0 127 0 0 empty empty empty -2 -8 0 10 #191919 #e1e1e1 #e1e1e1 0 1;
+#X connect 0 0 2 0;
+#X connect 0 0 2 1;
+#X connect 1 0 0 0;
+#X connect 3 0 1 0;

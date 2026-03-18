@@ -27,6 +27,18 @@ fn parse_bool(s: &str) -> bool {
     s.parse::<u32>().unwrap_or(0) != 0
 }
 fn parse_color(s: &str) -> Color {
+    // plugdata / newer PD uses #RRGGBB hex strings
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&hex[0..2], 16),
+                u8::from_str_radix(&hex[2..4], 16),
+                u8::from_str_radix(&hex[4..6], 16),
+            ) {
+                return Color { r, g, b };
+            }
+        }
+    }
     Color::from_pd_int(s.parse::<i64>().unwrap_or(0))
 }
 

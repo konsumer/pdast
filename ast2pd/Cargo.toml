@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "CLI: convert pdast JSON AST back to a PureData .pd patch"
-license = "MIT"
+license = "Zlib"
+authors = ["David Konsumer (@konsumer)"]
 
 [dependencies]
 pdast = { path = "../pdast" }

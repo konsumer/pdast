@@ -36,11 +36,17 @@ fn split_records(input: &str) -> Vec<Record> {
     let mut current_chunk: Option<char> = None;
     let mut current_body = String::new();
     let mut chars = input.chars().peekable();
+    // Track whether we are at a position where '#' can start a new record.
+    // In PD files, '#N', '#X', '#A' always appear at the start of a line.
+    // Inside a record body (e.g. plugdata hex colors like #191919) '#' must
+    // NOT be treated as a record starter.
+    let mut at_line_start = true;
 
     while let Some(c) = chars.next() {
         match c {
-            '#' => {
-                // Start of a new record
+            '#' if at_line_start || current_chunk.is_none() => {
+                // Start of a new record — only valid at line start or before
+                // any record has been opened.
                 if let Some(chunk_char) = chars.next() {
                     let chunk = chunk_char.to_ascii_uppercase();
                     // Skip whitespace after chunk identifier
@@ -49,7 +55,15 @@ fn split_records(input: &str) -> Vec<Record> {
                     }
                     current_chunk = Some(chunk);
                     current_body.clear();
+                    at_line_start = false;
                 }
+            }
+            '#' => {
+                // Mid-record '#' — treat as a literal character (e.g. hex color)
+                if current_chunk.is_some() {
+                    current_body.push('#');
+                }
+                at_line_start = false;
             }
             ';' => {
                 // Record terminator (unescaped)
@@ -60,6 +74,7 @@ fn split_records(input: &str) -> Vec<Record> {
                     }
                     current_body.clear();
                 }
+                at_line_start = false; // ';' is followed by \r\n which sets it
             }
             '\\' => {
                 // Escape sequence — pass through verbatim so atom parser sees it
@@ -67,8 +82,11 @@ fn split_records(input: &str) -> Vec<Record> {
                 if let Some(next) = chars.next() {
                     current_body.push(next);
                 }
+                at_line_start = false;
             }
             '\r' | '\n' => {
+                // Line endings: next non-whitespace may be a record starter
+                at_line_start = true;
                 // Line endings within a record body become spaces
                 if current_chunk.is_some() {
                     // Collapse multiple whitespace into one space
@@ -81,6 +99,9 @@ fn split_records(input: &str) -> Vec<Record> {
             _ => {
                 if current_chunk.is_some() {
                     current_body.push(c);
+                }
+                if !c.is_whitespace() {
+                    at_line_start = false;
                 }
             }
         }

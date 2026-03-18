@@ -1,0 +1,72 @@
+name: Build and deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:   # allow manual trigger from the Actions UI
+
+# Allow the job to push to gh-pages
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Rust toolchain ───────────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # Cache Cargo registry + build artifacts
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── wasm-pack ────────────────────────────────────────────────────────────
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      # ── Build WASM (--target web, no bundler needed) ─────────────────────────
+      - name: Build WASM package
+        run: wasm-pack build --target web pdast --features wasm-js
+
+      # ── Run Rust tests ───────────────────────────────────────────────────────
+      - name: Run tests
+        run: cargo test --workspace
+
+      # ── Assemble the gh-pages site ───────────────────────────────────────────
+      # Structure:
+      #   dist/
+      #   ├── index.html           (web/index.html)
+      #   ├── components/          (web/components/)
+      #   └── pdast/               (pdast/pkg/ — WASM package)
+      - name: Assemble site
+        run: |
+          mkdir -p dist/pdast dist/components
+          cp -r web/index.html dist/
+          cp -r web/components/. dist/components/
+          cp -r pdast/pkg/. dist/pdast/
+
+      # ── Deploy to gh-pages branch ─────────────────────────────────────────────
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dist
+          publish_branch: gh-pages
+          force_orphan: true      # keep gh-pages history lean
+          user_name: github-actions[bot]
+          user_email: github-actions[bot]@users.noreply.github.com

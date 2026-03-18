@@ -1,5 +1,5 @@
 {
-  "name": "pdast",
+  "name": "@konsumer/pdast",
   "version": "0.0.2",
   "description": "Parse PureData .pd patches into a JSON AST — WASM core + web components",
   "license": "Zlib",
@@ -44,7 +44,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "wasm-pack build --target web pdast --features wasm-js && npx -y rimraf pdast/pkg/.gitignore",
+    "build": "wasm-pack build --target web pdast --features wasm-js && node -e \"require('fs').rmSync('pdast/pkg/.gitignore',{force:true})\"",
     "prepublishOnly": "npm run build",
     "start": "npx -y live-server web --port=4321 --no-browser --mount=/pdast:pdast/pkg",
     "prestart": "npm run build",

@@ -2,7 +2,7 @@
  * pdast — PureData .pd patch parser
  *
  * Usage:
- *   import { parse, emitPatch } from 'pdast';
+ *   import { parse, emitPatch } from '@konsumer/pdast';
  *   const result = parse(pdFileContent);
  */
 

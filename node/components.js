@@ -1,7 +1,7 @@
 /**
  * pdast web components — import to register all custom elements.
  *
- * Usage:  import 'pdast/components';
+ * Usage:  import '@konsumer/pdast/components';
  */
 export * from '../web/components/pd-styles.js'
 import '../web/components/pd-file-drop.js'

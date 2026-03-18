@@ -218,6 +218,66 @@ Objects with no template emit a passthrough stub `_ // passthrough stub` and a w
 - `tabread4~` and arrays generate placeholder stubs — you need to wire up the `rdtable` call manually.
 - The generated `process` expression uses Faust's inline sequential/merge composition. For large patches with many fan-out connections the expression can be redundant (nodes may appear more than once). This is valid Faust but inefficient; refactoring to `letrec` or `with` blocks is a future improvement.
 
+## Using pdast as a WASM / JavaScript package
+
+### Build
+
+```sh
+# JS/browser/Node (wasm-bindgen, full JS API)
+wasm-pack build pdast --features wasm-js
+# Output: pdast/pkg/  — an npm-ready package
+
+# Plain WASM (WASI, component model, any non-JS host)
+cargo build -p pdast --target wasm32-wasip1 --release
+```
+
+### JavaScript / TypeScript (wasm-pack output)
+
+```js
+import { parse, parseToJson, emitPatch, emitPatchFromJson } from './pdast/pkg/pdast.js';
+
+const pd = `#N canvas 0 50 450 300 12;\r\n#X obj 30 27 osc~ 440;\r\n...`;
+
+// Parse to a JS object ({ patch: {...}, warnings: [...] })
+const result = parse(pd);
+console.log(result.patch.root.nodes);
+
+// Parse with an abstraction loader callback
+const result2 = parse(pd, (name) => {
+  // return the .pd file content for `name`, or null if unavailable
+  return fetch(`/patches/${name}.pd`).then(r => r.text()); // async also works
+});
+
+// Emit a JS object back to .pd text
+const pdOut = emitPatch(result);
+
+// Parse → JSON string (useful for storage or passing to another language)
+const json = parseToJson(pd);
+const pdOut2 = emitPatchFromJson(json);
+```
+
+All four exported functions throw a JS `Error` on failure.
+
+### Non-JS WASM hosts (WASI / raw ABI)
+
+The module always exports these low-level C ABI functions, usable from any WASM runtime:
+
+| Export | Description |
+|---|---|
+| `wasm_alloc(size: i32) -> i32` | Allocate bytes in WASM memory |
+| `wasm_dealloc(ptr: i32, size: i32)` | Free previously allocated bytes |
+| `wasm_parse_to_json_abi(patch_ptr, patch_len, abs_ptr, abs_len) -> i64` | Parse patch → JSON AST |
+| `wasm_emit_to_pd_abi(ast_ptr, ast_len) -> i64` | JSON AST → `.pd` text |
+| `wasm_patch_to_pd_abi(patch_ptr, patch_len, abs_ptr, abs_len) -> i64` | Parse + emit in one call |
+
+All string functions follow the same convention:
+1. Allocate input strings in WASM memory with `wasm_alloc`.
+2. Call the function with `(ptr: i32, len: i32)` pairs.
+3. The return value encodes the result as `(ptr << 32) | len` in a single `i64`.
+4. Read the result bytes from WASM memory, then free with `wasm_dealloc(ptr, len)`.
+
+The `abs_ptr/abs_len` parameter for parse functions is a JSON object string mapping abstraction names to patch content: `{"my-filter": "#N canvas ..."}`. Pass an empty string or `"{}"` for no abstractions.
+
 ## Using pdast as a Rust library
 
 Add to your `Cargo.toml`:

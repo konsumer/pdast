@@ -13,6 +13,32 @@ The project is a Rust workspace with four crates:
 
 ## Installation
 
+You can find pre-built versions of the CLI tools on [releases](https://github.com/konsumer/pdast/releases). Just download the correct archive for your platform/cpu, and put them in your path.
+
+### javascript
+
+If you want to use it as a library in a web-page, or node/bun/deno/etc app it's available at [@konsumer/pdast](https://www.npmjs.com/package/@konsumer/pdast).
+
+```js
+// the main lib
+import { parse, emitPatch } from '@konsumer/pdast'
+
+const result = parse(pdFileContent)
+
+// web-components you can use in your own thing
+import '@konsumer/pdast/components'
+
+// now you have these (see web/index.html for usage)
+// <pd-file-drop />
+// <pd-loader/>
+// <pd-ast-viewer/>
+// <pd-patch-graph/>
+```
+
+### rust
+
+If you have rust tooling installed, you can also do this:
+
 ```sh
 cargo install --path pd2ast
 cargo install --path ast2pd

@@ -25,4 +25,4 @@ Some good example AST output targets:
 - Faust, which can generate many other formats (native standalone/puredata/vst/ladspa/etc)
 - Teensy Audio Library (C code)
 
-Store the findings of your research and plan for development in PLAN.md.
+Store the findings of your research and plan for development in [PLAN.md](PLAN.md).

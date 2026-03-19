@@ -121,7 +121,7 @@ fn builtin_lib() -> HashMap<&'static str, &'static str> {
     embed!("noise~", "noise~.dsp");
     embed!("dac~", "dac~.dsp");
     embed!("adc~", "adc~.dsp");
-    embed!("*~", "*~.dsp");
+    embed!("*~", "mul~.dsp");
     embed!("+~", "+~.dsp");
     embed!("-~", "-~.dsp");
     embed!("/~", "div~.dsp");

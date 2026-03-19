@@ -50,7 +50,6 @@ jobs:
             use_cross: false
             ext: '.exe'
 
-
     steps:
       - uses: actions/checkout@v4
 
@@ -79,24 +78,53 @@ jobs:
         if: '!matrix.use_cross'
         run: cargo build --release --target ${{ matrix.target }} --package ast2pd --package pd2ast --package pdast2faust
 
-      - name: Package binaries
+      - name: Package binaries (zip, Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}"
+          $ext    = "${{ matrix.ext }}"
+          $os     = "${{ matrix.os }}"
+          $arch   = "${{ matrix.arch }}"
+          $bins   = @("ast2pd", "pd2ast", "pdast2faust")
+          $stage  = "pdast-${os}-${arch}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          foreach ($bin in $bins) {
+            Copy-Item "target\$target\release\$bin$ext" "$stage\$bin$ext"
+          }
+          Compress-Archive -Path "$stage\*" -DestinationPath "$stage.zip"
+
+      - name: Package binaries (zip, macOS)
+        if: matrix.os == 'macos'
         shell: bash
         run: |
-          BINS=(ast2pd pd2ast pdast2faust)
-          EXT="${{ matrix.ext }}"
+          TARGET="${{ matrix.target }}"
           OS="${{ matrix.os }}"
           ARCH="${{ matrix.arch }}"
-          TARGET="${{ matrix.target }}"
-          OUTDIR="release-artifacts"
-          mkdir -p "$OUTDIR"
-
+          BINS=(ast2pd pd2ast pdast2faust)
+          STAGE="pdast-${OS}-${ARCH}"
+          mkdir -p "$STAGE"
           for BIN in "${BINS[@]}"; do
-            SRC="target/${TARGET}/release/${BIN}${EXT}"
-            DEST="${OUTDIR}/${BIN}-${OS}-${ARCH}${EXT}"
-            cp "$SRC" "$DEST"
+            cp "target/${TARGET}/release/${BIN}" "${STAGE}/${BIN}"
           done
+          zip -r "${STAGE}.zip" "$STAGE"
+
+      - name: Package binaries (tar.gz, Linux)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          TARGET="${{ matrix.target }}"
+          OS="${{ matrix.os }}"
+          ARCH="${{ matrix.arch }}"
+          BINS=(ast2pd pd2ast pdast2faust)
+          STAGE="pdast-${OS}-${ARCH}"
+          mkdir -p "$STAGE"
+          for BIN in "${BINS[@]}"; do
+            cp "target/${TARGET}/release/${BIN}" "${STAGE}/${BIN}"
+          done
+          tar czf "${STAGE}.tar.gz" "$STAGE"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: release-artifacts/*
+          files: pdast-${{ matrix.os }}-${{ matrix.arch }}.*

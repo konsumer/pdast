@@ -1,6 +1,6 @@
 {
   "name": "@konsumer/pdast",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Parse PureData .pd patches into a JSON AST — WASM core + web components",
   "license": "Zlib",
   "author": "David Konsumer (https://github.com/konsumer)",

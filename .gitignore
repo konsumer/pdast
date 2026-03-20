@@ -3,3 +3,4 @@ pdast/pkg/
 node_modules/
 .ruff_cache
 __pycache__
+._*

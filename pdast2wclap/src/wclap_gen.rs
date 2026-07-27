@@ -398,6 +398,35 @@ fn collect_delay_lines(nodes: &[&Node]) -> BTreeMap<String, f64> {
     map
 }
 
+// ── Arrays / tables ──────────────────────────────────────────────────────────
+//
+// `NodeKind::Array` lives inside a `NodeKind::Graph`'s nested canvas (Pd's
+// array/table window). Sizes are known at codegen time (unlike delay lines,
+// which need the runtime sample rate), so each array becomes a fixed-size
+// `double[]` field directly on `PdState`, keyed by name and seeded from the
+// patch's saved data (or zeros if none was saved).
+pub struct ArrayInfo {
+    pub size: u32,
+    pub data: Vec<f64>,
+}
+
+fn collect_arrays(nodes: &[Node]) -> BTreeMap<String, ArrayInfo> {
+    let mut map: BTreeMap<String, ArrayInfo> = BTreeMap::new();
+    for node in nodes {
+        if let NodeKind::Graph { content } = &node.kind {
+            for inner in &content.nodes {
+                if let NodeKind::Array { name, size, data, .. } = &inner.kind {
+                    map.insert(
+                        name.clone(),
+                        ArrayInfo { size: (*size).max(1), data: data.clone() },
+                    );
+                }
+            }
+        }
+    }
+    map
+}
+
 // ── C identifier helpers ────────────────────────────────────────────────────
 
 fn field(id: u32) -> String {
@@ -468,6 +497,7 @@ impl WclapGenerator {
             .map(|n| n.id);
         let has_note_in = notein_id.is_some();
         let delay_lines = collect_delay_lines(&active);
+        let arrays = collect_arrays(&nodes);
 
         let mut state_fields = String::new();
         let mut init_stmts = String::new();
@@ -476,6 +506,22 @@ impl WclapGenerator {
         let mut control_stmts = String::new();
         let mut dac_l: Vec<String> = Vec::new();
         let mut dac_r: Vec<String> = Vec::new();
+
+        for (name, info) in &arrays {
+            let c = sanitize_c_name(name);
+            state_fields.push_str(&format!("  double arr_{c}[{}];\n", info.size));
+            if info.data.is_empty() {
+                init_stmts.push_str(&format!("  memset(st->arr_{c}, 0, sizeof(st->arr_{c}));\n"));
+            } else {
+                let vals: Vec<String> = (0..info.size as usize)
+                    .map(|i| format!("{}", info.data.get(i).copied().unwrap_or(0.0)))
+                    .collect();
+                init_stmts.push_str(&format!(
+                    "  {{ static const double _init_{c}[] = {{ {} }};\n    memcpy(st->arr_{c}, _init_{c}, sizeof(_init_{c}));\n  }}\n",
+                    vals.join(", ")
+                ));
+            }
+        }
 
         for &id in &order {
             let Some(&node) = node_by_id.get(&id) else {
@@ -494,6 +540,7 @@ impl WclapGenerator {
                 &node_outlets,
                 &bus_map,
                 &delay_lines,
+                &arrays,
                 &mut dac_l,
                 &mut dac_r,
                 &mut destroy_stmts,
@@ -530,6 +577,7 @@ impl WclapGenerator {
         node_outlets: &HashMap<u32, usize>,
         bus_map: &BTreeMap<String, BusEntry>,
         delay_lines: &BTreeMap<String, f64>,
+        arrays: &BTreeMap<String, ArrayInfo>,
         dac_l: &mut Vec<String>,
         dac_r: &mut Vec<String>,
         destroy_stmts: &mut String,
@@ -599,6 +647,7 @@ impl WclapGenerator {
                 node_outlets,
                 bus_map,
                 delay_lines,
+                arrays,
                 &input_expr,
                 dac_l,
                 dac_r,
@@ -623,6 +672,7 @@ impl WclapGenerator {
         _node_outlets: &HashMap<u32, usize>,
         bus_map: &BTreeMap<String, BusEntry>,
         delay_lines: &BTreeMap<String, f64>,
+        arrays: &BTreeMap<String, ArrayInfo>,
         input_expr: &dyn Fn(u32, &str) -> String,
         dac_l: &mut Vec<String>,
         dac_r: &mut Vec<String>,
@@ -1338,6 +1388,77 @@ impl WclapGenerator {
                 }
             }
 
+            // ── arrays / tables ──────────────────────────────────────────────
+            "tabread~" | "tabread" => {
+                let Some(Token::Symbol(aname)) = args.first() else {
+                    self.warnings.push(format!("{name} needs an array-name argument — emitted as a zero stub"));
+                    return EmittedNode { domain: domain_of(name), state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                };
+                let Some(info) = arrays.get(aname) else {
+                    self.warnings.push(format!("{name} {aname}: no array named '{aname}' in this patch — emitted as a zero stub"));
+                    return EmittedNode { domain: domain_of(name), state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                };
+                let c = sanitize_c_name(aname);
+                let idx = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: domain_of(name),
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!(
+                        "  {{\n    int32_t _i = (int32_t)({idx});\n    if (_i < 0) _i = 0;\n    if (_i >= {size}) _i = {size} - 1;\n    st->{f} = st->arr_{c}[_i];\n  }}\n",
+                        size = info.size
+                    ),
+                }
+            }
+            // Continuously overwrites the array in a circular fashion —
+            // an honest approximation of PD's bang-armed one-shot record
+            // (real tabwrite~ starts on a bang, records once until full,
+            // then stops; we have no discrete bang trigger to key off of).
+            "tabwrite~" => {
+                let Some(Token::Symbol(aname)) = args.first() else {
+                    self.warnings.push("tabwrite~ needs an array-name argument — emitted as a zero stub".into());
+                    return EmittedNode { domain: Domain::Signal, state_fields: String::new(), init: String::new(), compute: String::new() };
+                };
+                let Some(info) = arrays.get(aname) else {
+                    self.warnings.push(format!("tabwrite~ {aname}: no array named '{aname}' in this patch — emitted as a zero stub"));
+                    return EmittedNode { domain: Domain::Signal, state_fields: String::new(), init: String::new(), compute: String::new() };
+                };
+                let c = sanitize_c_name(aname);
+                let inp = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  int32_t {f}_widx;\n"),
+                    init: format!("  st->{f}_widx = 0;\n"),
+                    compute: format!(
+                        "  st->arr_{c}[st->{f}_widx] = {inp};\n  st->{f}_widx = (st->{f}_widx + 1) % {size};\n",
+                        size = info.size
+                    ),
+                }
+            }
+            // Wavetable oscillator; linearly interpolated (real tabosc4~ is
+            // 4-point/cubic — documented simplification).
+            "tabosc4~" => {
+                let Some(Token::Symbol(aname)) = args.first() else {
+                    self.warnings.push("tabosc4~ needs an array-name argument — emitted as a zero stub".into());
+                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                };
+                let Some(info) = arrays.get(aname) else {
+                    self.warnings.push(format!("tabosc4~ {aname}: no array named '{aname}' in this patch — emitted as a zero stub"));
+                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                };
+                let c = sanitize_c_name(aname);
+                let freq = input_expr(0, &format!("{}", if args.len() > 1 { farg(1) } else { 0.0 }));
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_phase;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_phase = 0.0;\n"),
+                    compute: format!(
+                        "  {{\n    double _pos = st->{f}_phase * {size};\n    int32_t _i0 = (int32_t)_pos % {size};\n    int32_t _i1 = (_i0 + 1) % {size};\n    double _frac = _pos - floor(_pos);\n    st->{f} = st->arr_{c}[_i0] * (1.0 - _frac) + st->arr_{c}[_i1] * _frac;\n    st->{f}_phase += ({freq}) / st->sample_rate;\n    if (st->{f}_phase >= 1.0) st->{f}_phase -= 1.0;\n    if (st->{f}_phase < 0.0) st->{f}_phase += 1.0;\n  }}\n",
+                        size = info.size
+                    ),
+                }
+            }
+
             // ── unsupported: passthrough stub with a warning ────────────────
             other => {
                 self.warnings.push(format!(
@@ -1674,5 +1795,68 @@ mod tests {
             c.contains("pd_process"),
             "generator must still produce valid output: {c}"
         );
+    }
+
+    // Array-in-graph save format is fiddly to hand-write as .pd text, so
+    // this builds the AST directly (pdast's own parser tests already cover
+    // the textual format) to exercise tabread~/array codegen reliably.
+    #[test]
+    fn tabread_reads_seeded_array_data() {
+        use pdast::types::{Canvas as C, Node as N};
+
+        let array_canvas = C {
+            x: 0,
+            y: 0,
+            width: 450,
+            height: 300,
+            font_size: None,
+            name: None,
+            open_on_load: false,
+            coords: None,
+            nodes: vec![N {
+                id: 0,
+                x: 0,
+                y: 0,
+                kind: NodeKind::Array {
+                    name: "wave".into(),
+                    size: 4,
+                    data_type: "float".into(),
+                    flags: 1,
+                    data: vec![0.0, 0.5, 1.0, 0.5],
+                },
+            }],
+            connections: vec![],
+        };
+
+        let root = C {
+            x: 0,
+            y: 0,
+            width: 450,
+            height: 300,
+            font_size: Some(12),
+            name: None,
+            open_on_load: false,
+            coords: None,
+            nodes: vec![
+                N { id: 0, x: 0, y: 0, kind: NodeKind::Graph { content: Box::new(array_canvas) } },
+                N {
+                    id: 1,
+                    x: 0,
+                    y: 0,
+                    kind: NodeKind::Obj { name: "tabread~".into(), args: vec![Token::Symbol("wave".into())] },
+                },
+                N { id: 2, x: 0, y: 0, kind: NodeKind::Obj { name: "dac~".into(), args: vec![] } },
+            ],
+            connections: vec![
+                Connection { src_node: 1, src_outlet: 0, dst_node: 2, dst_inlet: 0 },
+                Connection { src_node: 1, src_outlet: 0, dst_node: 2, dst_inlet: 1 },
+            ],
+        };
+
+        let mut g = WclapGenerator::new();
+        let c = g.generate(&root);
+        assert!(c.contains("double arr_wave[4];"), "{c}");
+        assert!(c.contains("0, 0.5, 1, 0.5"), "seeded data missing: {c}");
+        assert!(c.contains("st->arr_wave[_i]"), "tabread~ must read arr_wave: {c}");
     }
 }

@@ -198,10 +198,7 @@ fn outlet_count(node: &Node) -> usize {
             "notein" => 3,
             "vcf~" | "moses" => 2,
             "sel" | "select" | "route" => {
-                let n = args
-                    .iter()
-                    .filter(|t| matches!(t, Token::Float(_)))
-                    .count();
+                let n = args.iter().filter(|t| matches!(t, Token::Float(_))).count();
                 (n.max(1)) + 1
             }
             "pack" | "unpack" => args.len().max(2),
@@ -387,7 +384,13 @@ fn collect_delay_lines(nodes: &[&Node]) -> BTreeMap<String, f64> {
                 };
                 let maxms = args
                     .get(1)
-                    .and_then(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+                    .and_then(|t| {
+                        if let Token::Float(v) = t {
+                            Some(*v)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or(1000.0);
                 let e = map.entry(dname.clone()).or_insert(0.0);
                 if maxms > *e {
@@ -416,10 +419,16 @@ fn collect_arrays(nodes: &[Node]) -> BTreeMap<String, ArrayInfo> {
     for node in nodes {
         if let NodeKind::Graph { content } = &node.kind {
             for inner in &content.nodes {
-                if let NodeKind::Array { name, size, data, .. } = &inner.kind {
+                if let NodeKind::Array {
+                    name, size, data, ..
+                } = &inner.kind
+                {
                     map.insert(
                         name.clone(),
-                        ArrayInfo { size: (*size).max(1), data: data.clone() },
+                        ArrayInfo {
+                            size: (*size).max(1),
+                            data: data.clone(),
+                        },
                     );
                 }
             }
@@ -445,7 +454,13 @@ fn field_o(id: u32, outlet: u32) -> String {
 /// identifier fragment.
 fn sanitize_c_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -823,8 +838,14 @@ impl WclapGenerator {
             }
             "clip" => {
                 let a = input_expr(0, "0.0");
-                let lo = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
-                let hi = input_expr(2, &format!("{}", if args.len() < 2 { 1.0 } else { farg(1) }));
+                let lo = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
+                let hi = input_expr(
+                    2,
+                    &format!("{}", if args.len() < 2 { 1.0 } else { farg(1) }),
+                );
                 simple_control(
                     id,
                     &format!("(({a}) < ({lo}) ? ({lo}) : (({a}) > ({hi}) ? ({hi}) : ({a})))"),
@@ -863,7 +884,10 @@ impl WclapGenerator {
             // ── unit conversions ─────────────────────────────────────────────
             "dbtorms" => {
                 let a = input_expr(0, "0.0");
-                simple_control(id, &format!("(({a}) > 0.0 ? pow(10.0, (({a}) - 100.0) / 20.0) : 0.0)"))
+                simple_control(
+                    id,
+                    &format!("(({a}) > 0.0 ? pow(10.0, (({a}) - 100.0) / 20.0) : 0.0)"),
+                )
             }
             "rmstodb" => {
                 let a = input_expr(0, "0.0");
@@ -874,7 +898,10 @@ impl WclapGenerator {
             }
             "dbtopow" => {
                 let a = input_expr(0, "0.0");
-                simple_control(id, &format!("(({a}) > 0.0 ? pow(10.0, (({a}) - 100.0) / 10.0) : 0.0)"))
+                simple_control(
+                    id,
+                    &format!("(({a}) > 0.0 ? pow(10.0, (({a}) - 100.0) / 10.0) : 0.0)"),
+                )
             }
             "powtodb" => {
                 let a = input_expr(0, "0.0");
@@ -917,7 +944,13 @@ impl WclapGenerator {
                     vec![0.0]
                 } else {
                     args.iter()
-                        .filter_map(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+                        .filter_map(|t| {
+                            if let Token::Float(v) = t {
+                                Some(*v)
+                            } else {
+                                None
+                            }
+                        })
                         .collect()
                 };
                 let mut compute = String::new();
@@ -927,9 +960,7 @@ impl WclapGenerator {
                     let fld = field_o(id, i as u32);
                     state_fields.push_str(&format!("  double {fld};\n"));
                     init.push_str(&format!("  st->{fld} = 0.0;\n"));
-                    compute.push_str(&format!(
-                        "  st->{fld} = (({a}) == ({t}) ? 1.0 : 0.0);\n"
-                    ));
+                    compute.push_str(&format!("  st->{fld} = (({a}) == ({t}) ? 1.0 : 0.0);\n"));
                 }
                 // Last outlet: pass the input through when nothing matched.
                 let pass_fld = field_o(id, targets.len() as u32);
@@ -943,7 +974,12 @@ impl WclapGenerator {
                 compute.push_str(&format!(
                     "  st->{pass_fld} = (!({matches_any})) ? ({a}) : 0.0;\n"
                 ));
-                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields,
+                    init,
+                    compute,
+                }
             }
             "change" => {
                 // Continuous approximation: mirrors the input every recompute
@@ -958,9 +994,19 @@ impl WclapGenerator {
                 let a = input_expr(0, "0.0");
                 let targets: Vec<f64> = args
                     .iter()
-                    .filter_map(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+                    .filter_map(|t| {
+                        if let Token::Float(v) = t {
+                            Some(*v)
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
-                let targets = if targets.is_empty() { vec![0.0] } else { targets };
+                let targets = if targets.is_empty() {
+                    vec![0.0]
+                } else {
+                    targets
+                };
                 let mut compute = String::new();
                 let mut state_fields = String::new();
                 let mut init = String::new();
@@ -978,8 +1024,15 @@ impl WclapGenerator {
                     .map(|t| format!("(({a}) == ({t}))"))
                     .collect::<Vec<_>>()
                     .join(" || ");
-                compute.push_str(&format!("  st->{pass_fld} = (!({matches_any})) ? ({a}) : 0.0;\n"));
-                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+                compute.push_str(&format!(
+                    "  st->{pass_fld} = (!({matches_any})) ? ({a}) : 0.0;\n"
+                ));
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields,
+                    init,
+                    compute,
+                }
             }
             // Numeric fan-out: every outlet mirrors the input. Real PD's
             // trigger also converts per-outlet type (bang/symbol/float) and
@@ -997,7 +1050,12 @@ impl WclapGenerator {
                     init.push_str(&format!("  st->{fld} = 0.0;\n"));
                     compute.push_str(&format!("  st->{fld} = {a};\n"));
                 }
-                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields,
+                    init,
+                    compute,
+                }
             }
             // Control-rate ramp toward the input value over a creation-arg
             // time (ms), updated once per control recompute (block rate)
@@ -1034,13 +1092,27 @@ impl WclapGenerator {
                 let mut compute = String::new();
                 for i in 0..n {
                     let fld = field_o(id, i as u32);
-                    let default = format!("{}", args.get(i).and_then(|t| if let Token::Float(v)=t {Some(*v)} else {None}).unwrap_or(0.0));
+                    let default = format!(
+                        "{}",
+                        args.get(i)
+                            .and_then(|t| if let Token::Float(v) = t {
+                                Some(*v)
+                            } else {
+                                None
+                            })
+                            .unwrap_or(0.0)
+                    );
                     let v = input_expr(i as u32, &default);
                     state_fields.push_str(&format!("  double {fld};\n"));
                     init.push_str(&format!("  st->{fld} = 0.0;\n"));
                     compute.push_str(&format!("  st->{fld} = {v};\n"));
                 }
-                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields,
+                    init,
+                    compute,
+                }
             }
             "unpack" => {
                 // Single numeric input feeds every outlet identically (no
@@ -1056,7 +1128,12 @@ impl WclapGenerator {
                     init.push_str(&format!("  st->{fld} = 0.0;\n"));
                     compute.push_str(&format!("  st->{fld} = {a};\n"));
                 }
-                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields,
+                    init,
+                    compute,
+                }
             }
 
             // ── MIDI note input (real events, wired by runtime-shim.c via
@@ -1276,7 +1353,10 @@ impl WclapGenerator {
             }
             "rzero~" => {
                 let inp = input_expr(0, "0.0");
-                let a = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
+                let a = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
                 EmittedNode {
                     domain: Domain::Signal,
                     state_fields: format!("  double {f};\n  double {f}_px;\n"),
@@ -1288,7 +1368,10 @@ impl WclapGenerator {
             }
             "rpole~" => {
                 let inp = input_expr(0, "0.0");
-                let a = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
+                let a = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
                 EmittedNode {
                     domain: Domain::Signal,
                     state_fields: format!("  double {f};\n"),
@@ -1329,8 +1412,14 @@ impl WclapGenerator {
             }
             "clip~" => {
                 let a = input_expr(0, "0.0");
-                let lo = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
-                let hi = input_expr(2, &format!("{}", if args.len() < 2 { 1.0 } else { farg(1) }));
+                let lo = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
+                let hi = input_expr(
+                    2,
+                    &format!("{}", if args.len() < 2 { 1.0 } else { farg(1) }),
+                );
                 EmittedNode {
                     domain: Domain::Signal,
                     state_fields: format!("  double {f};\n"),
@@ -1411,8 +1500,14 @@ impl WclapGenerator {
             // ── delay lines (shared buffer keyed by name, not node id) ──────
             "delwrite~" => {
                 let Some(Token::Symbol(dname)) = args.first() else {
-                    self.warnings.push("delwrite~ needs a name argument — emitted as a zero stub".into());
-                    return EmittedNode { domain: Domain::Signal, state_fields: String::new(), init: String::new(), compute: String::new() };
+                    self.warnings
+                        .push("delwrite~ needs a name argument — emitted as a zero stub".into());
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: String::new(),
+                        init: String::new(),
+                        compute: String::new(),
+                    };
                 };
                 let c = sanitize_c_name(dname);
                 let inp = input_expr(0, "0.0");
@@ -1420,7 +1515,9 @@ impl WclapGenerator {
                 let maxms = delay_lines.get(dname).copied().unwrap_or(1000.0);
                 let (state_fields, init, destroy) = if first_time {
                     (
-                        format!("  double* dlbuf_{c};\n  int32_t dlsize_{c};\n  int32_t dlwidx_{c};\n"),
+                        format!(
+                            "  double* dlbuf_{c};\n  int32_t dlsize_{c};\n  int32_t dlwidx_{c};\n"
+                        ),
                         format!(
                             "  st->dlsize_{c} = (int32_t)(({maxms} / 1000.0) * st->sample_rate) + 1;\n  if (st->dlsize_{c} < 1) st->dlsize_{c} = 1;\n  st->dlbuf_{c} = (double*)calloc((size_t)st->dlsize_{c}, sizeof(double));\n  st->dlwidx_{c} = 0;\n"
                         ),
@@ -1441,12 +1538,24 @@ impl WclapGenerator {
             }
             "delread~" | "vd~" => {
                 let Some(Token::Symbol(dname)) = args.first() else {
-                    self.warnings.push(format!("{name} needs a name argument — emitted as a zero stub"));
-                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                    self.warnings.push(format!(
+                        "{name} needs a name argument — emitted as a zero stub"
+                    ));
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    };
                 };
                 if !delay_lines.contains_key(dname) {
                     self.warnings.push(format!("{name} {dname}: no delwrite~ {dname} in this patch — emitted as a zero stub"));
-                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    };
                 }
                 let c = sanitize_c_name(dname);
                 let delay_default = if name == "vd~" { 0.0 } else { farg(1) };
@@ -1468,12 +1577,24 @@ impl WclapGenerator {
             // ── arrays / tables ──────────────────────────────────────────────
             "tabread~" | "tabread" => {
                 let Some(Token::Symbol(aname)) = args.first() else {
-                    self.warnings.push(format!("{name} needs an array-name argument — emitted as a zero stub"));
-                    return EmittedNode { domain: domain_of(name), state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                    self.warnings.push(format!(
+                        "{name} needs an array-name argument — emitted as a zero stub"
+                    ));
+                    return EmittedNode {
+                        domain: domain_of(name),
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    };
                 };
                 let Some(info) = arrays.get(aname) else {
                     self.warnings.push(format!("{name} {aname}: no array named '{aname}' in this patch — emitted as a zero stub"));
-                    return EmittedNode { domain: domain_of(name), state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                    return EmittedNode {
+                        domain: domain_of(name),
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    };
                 };
                 let c = sanitize_c_name(aname);
                 let idx = input_expr(0, "0.0");
@@ -1493,12 +1614,24 @@ impl WclapGenerator {
             // then stops; we have no discrete bang trigger to key off of).
             "tabwrite~" => {
                 let Some(Token::Symbol(aname)) = args.first() else {
-                    self.warnings.push("tabwrite~ needs an array-name argument — emitted as a zero stub".into());
-                    return EmittedNode { domain: Domain::Signal, state_fields: String::new(), init: String::new(), compute: String::new() };
+                    self.warnings.push(
+                        "tabwrite~ needs an array-name argument — emitted as a zero stub".into(),
+                    );
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: String::new(),
+                        init: String::new(),
+                        compute: String::new(),
+                    };
                 };
                 let Some(info) = arrays.get(aname) else {
                     self.warnings.push(format!("tabwrite~ {aname}: no array named '{aname}' in this patch — emitted as a zero stub"));
-                    return EmittedNode { domain: Domain::Signal, state_fields: String::new(), init: String::new(), compute: String::new() };
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: String::new(),
+                        init: String::new(),
+                        compute: String::new(),
+                    };
                 };
                 let c = sanitize_c_name(aname);
                 let inp = input_expr(0, "0.0");
@@ -1516,15 +1649,30 @@ impl WclapGenerator {
             // 4-point/cubic — documented simplification).
             "tabosc4~" => {
                 let Some(Token::Symbol(aname)) = args.first() else {
-                    self.warnings.push("tabosc4~ needs an array-name argument — emitted as a zero stub".into());
-                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                    self.warnings.push(
+                        "tabosc4~ needs an array-name argument — emitted as a zero stub".into(),
+                    );
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    };
                 };
                 let Some(info) = arrays.get(aname) else {
                     self.warnings.push(format!("tabosc4~ {aname}: no array named '{aname}' in this patch — emitted as a zero stub"));
-                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    };
                 };
                 let c = sanitize_c_name(aname);
-                let freq = input_expr(0, &format!("{}", if args.len() > 1 { farg(1) } else { 0.0 }));
+                let freq = input_expr(
+                    0,
+                    &format!("{}", if args.len() > 1 { farg(1) } else { 0.0 }),
+                );
                 EmittedNode {
                     domain: Domain::Signal,
                     state_fields: format!("  double {f};\n  double {f}_phase;\n"),
@@ -1915,18 +2063,46 @@ mod tests {
             open_on_load: false,
             coords: None,
             nodes: vec![
-                N { id: 0, x: 0, y: 0, kind: NodeKind::Graph { content: Box::new(array_canvas) } },
+                N {
+                    id: 0,
+                    x: 0,
+                    y: 0,
+                    kind: NodeKind::Graph {
+                        content: Box::new(array_canvas),
+                    },
+                },
                 N {
                     id: 1,
                     x: 0,
                     y: 0,
-                    kind: NodeKind::Obj { name: "tabread~".into(), args: vec![Token::Symbol("wave".into())] },
+                    kind: NodeKind::Obj {
+                        name: "tabread~".into(),
+                        args: vec![Token::Symbol("wave".into())],
+                    },
                 },
-                N { id: 2, x: 0, y: 0, kind: NodeKind::Obj { name: "dac~".into(), args: vec![] } },
+                N {
+                    id: 2,
+                    x: 0,
+                    y: 0,
+                    kind: NodeKind::Obj {
+                        name: "dac~".into(),
+                        args: vec![],
+                    },
+                },
             ],
             connections: vec![
-                Connection { src_node: 1, src_outlet: 0, dst_node: 2, dst_inlet: 0 },
-                Connection { src_node: 1, src_outlet: 0, dst_node: 2, dst_inlet: 1 },
+                Connection {
+                    src_node: 1,
+                    src_outlet: 0,
+                    dst_node: 2,
+                    dst_inlet: 0,
+                },
+                Connection {
+                    src_node: 1,
+                    src_outlet: 0,
+                    dst_node: 2,
+                    dst_inlet: 1,
+                },
             ],
         };
 
@@ -1934,6 +2110,9 @@ mod tests {
         let c = g.generate(&root);
         assert!(c.contains("double arr_wave[4];"), "{c}");
         assert!(c.contains("0, 0.5, 1, 0.5"), "seeded data missing: {c}");
-        assert!(c.contains("st->arr_wave[_i]"), "tabread~ must read arr_wave: {c}");
+        assert!(
+            c.contains("st->arr_wave[_i]"),
+            "tabread~ must read arr_wave: {c}"
+        );
     }
 }

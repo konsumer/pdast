@@ -194,7 +194,7 @@ fn domain_of(name: &str) -> Domain {
 fn outlet_count(node: &Node) -> usize {
     match &node.kind {
         NodeKind::Obj { name, args } => match name.as_str() {
-            "dac~" | "send" | "s" | "print" => 0,
+            "dac~" | "send" | "s" | "print" | "delwrite~" => 0,
             "notein" => 3,
             "vcf~" | "moses" => 2,
             "sel" | "select" => {
@@ -423,16 +423,23 @@ fn sanitize_c_name(name: &str) -> String {
 
 pub struct WclapGenerator {
     pub warnings: Vec<String>,
+    /// Delay-line names whose shared buffer fields have already been
+    /// declared/init'd/freed by a `delwrite~` node — a second `delwrite~`
+    /// with the same name (unusual, but legal PD) must reuse them rather
+    /// than re-declaring the same struct fields.
+    declared_delay_lines: HashSet<String>,
 }
 
 impl WclapGenerator {
     pub fn new() -> Self {
         WclapGenerator {
             warnings: Vec::new(),
+            declared_delay_lines: HashSet::new(),
         }
     }
 
     pub fn generate(&mut self, canvas: &Canvas) -> String {
+        self.declared_delay_lines.clear();
         let (nodes, connections) = flatten_patch(canvas);
 
         let active: Vec<&Node> = nodes
@@ -1099,6 +1106,234 @@ impl WclapGenerator {
                     ),
                     compute: format!(
                         "  {{\n    double _f = 2.0 * sin(3.141592653589793 * ({center}) / st->sample_rate);\n    if (_f > 1.0) _f = 1.0;\n    double _q = ({q}) > 0.01 ? ({q}) : 0.01;\n    double _hp = ({inp}) - st->{f}_lp - (1.0 / _q) * st->{f}_bp;\n    st->{f}_bp += _f * _hp;\n    st->{f}_lp += _f * st->{f}_bp;\n    st->{f} = st->{f}_bp;\n    st->{o1} = st->{f}_lp;\n  }}\n"
+                    ),
+                }
+            }
+            // Resonant bandpass with unity-ish peak gain (Q-compensated),
+            // 1 outlet — same SVF core as vcf~.
+            "bp~" => {
+                let inp = input_expr(0, "0.0");
+                let center = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
+                let q = if args.len() > 1 { farg(1) } else { 1.0 };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_bp;\n  double {f}_lp;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_bp = 0.0; st->{f}_lp = 0.0;\n"),
+                    compute: format!(
+                        "  {{\n    double _f = 2.0 * sin(3.141592653589793 * ({center}) / st->sample_rate);\n    if (_f > 1.0) _f = 1.0;\n    double _q = ({q}) > 0.01 ? ({q}) : 0.01;\n    double _hp = ({inp}) - st->{f}_lp - (1.0 / _q) * st->{f}_bp;\n    st->{f}_bp += _f * _hp;\n    st->{f}_lp += _f * st->{f}_bp;\n    st->{f} = st->{f}_bp * _q;\n  }}\n"
+                    ),
+                }
+            }
+            // Direct-form biquad; coefficients are baked in from creation
+            // args (b0 b1 b2 a1 a2) — PD drives them via a list message to
+            // a single inlet, which our scalar-signal model can't carry, so
+            // they're compile-time constants here rather than runtime-settable.
+            "biquad~" => {
+                let inp = input_expr(0, "0.0");
+                let b0 = farg(0);
+                let b1 = farg(1);
+                let b2 = farg(2);
+                let a1 = farg(3);
+                let a2 = farg(4);
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_w1;\n  double {f}_w2;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_w1 = 0.0; st->{f}_w2 = 0.0;\n"),
+                    compute: format!(
+                        "  {{\n    double _x = {inp};\n    double _y = {b0} * _x + st->{f}_w1;\n    st->{f}_w1 = {b1} * _x - {a1} * _y + st->{f}_w2;\n    st->{f}_w2 = {b2} * _x - {a2} * _y;\n    st->{f} = _y;\n  }}\n"
+                    ),
+                }
+            }
+            "rzero~" => {
+                let inp = input_expr(0, "0.0");
+                let a = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_px;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_px = 0.0;\n"),
+                    compute: format!(
+                        "  {{ double _x = {inp}; st->{f} = _x - ({a}) * st->{f}_px; st->{f}_px = _x; }}\n"
+                    ),
+                }
+            }
+            "rpole~" => {
+                let inp = input_expr(0, "0.0");
+                let a = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    // RHS reads st->f's OLD value before the assignment
+                    // completes — that's exactly y[n-1], no extra state needed.
+                    compute: format!("  st->{f} = ({inp}) + ({a}) * st->{f};\n"),
+                }
+            }
+
+            // ── signal-rate unary math ───────────────────────────────────────
+            "abs~" => {
+                let a = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!("  st->{f} = fabs({a});\n"),
+                }
+            }
+            "sqrt~" => {
+                let a = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!("  st->{f} = (({a}) > 0.0 ? sqrt({a}) : 0.0);\n"),
+                }
+            }
+            "wrap~" => {
+                let a = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!("  st->{f} = (({a}) - floor({a}));\n"),
+                }
+            }
+            "clip~" => {
+                let a = input_expr(0, "0.0");
+                let lo = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
+                let hi = input_expr(2, &format!("{}", if args.len() < 2 { 1.0 } else { farg(1) }));
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!(
+                        "  st->{f} = (({a}) < ({lo}) ? ({lo}) : (({a}) > ({hi}) ? ({hi}) : ({a})));\n"
+                    ),
+                }
+            }
+
+            // ── envelope / sample-hold — snapshot~ and samphold~ read a
+            //    signal input directly (whatever pd_signal_step last wrote
+            //    to that field), so they work from either domain. ─────────
+            "line~" => {
+                // Continuous one-pole ramp toward inlet 0's value over a
+                // creation-arg ramp time (ms) — an honest approximation of
+                // PD's target/time message pair (see README): not a
+                // discrete-message-triggered multi-segment ramp.
+                let target = input_expr(0, "0.0");
+                let ramp_ms = if args.is_empty() { 20.0 } else { farg(0) };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!(
+                        "  {{ double _c = 1.0 - exp(-1000.0 / (({ramp_ms}) > 0.001 ? ({ramp_ms}) : 0.001) / st->sample_rate); st->{f} += _c * (({target}) - st->{f}); }}\n"
+                    ),
+                }
+            }
+            "samphold~" => {
+                let a = input_expr(0, "0.0");
+                let trig = input_expr(1, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_ptrig;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_ptrig = 0.0;\n"),
+                    compute: format!(
+                        "  {{ double _t = {trig}; if (_t < st->{f}_ptrig) st->{f} = {a}; st->{f}_ptrig = _t; }}\n"
+                    ),
+                }
+            }
+            "snapshot~" => {
+                // Approximation: continuously mirrors the input signal's
+                // current sample rather than capturing only on a bang.
+                let a = input_expr(0, "0.0");
+                simple_control(id, &a)
+            }
+            "threshold~" => {
+                // Approximation: a continuous gate (1.0 above threshold, 0.0
+                // below) rather than a one-shot bang on crossing.
+                let a = input_expr(0, "0.0");
+                let thresh = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!("  st->{f} = (({a}) >= ({thresh}) ? 1.0 : 0.0);\n"),
+                }
+            }
+            "env~" => {
+                // Continuous one-pole RMS-to-dB follower (real env~ reports
+                // periodically at an analysis-window rate; this updates
+                // every sample instead, which is strictly higher-resolution).
+                let a = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_ms;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_ms = 0.0;\n"),
+                    compute: format!(
+                        "  {{ double _c = 1.0 - exp(-6.283185307179586 * 20.0 / st->sample_rate); double _x = {a}; st->{f}_ms += _c * (_x * _x - st->{f}_ms); double _rms = sqrt(st->{f}_ms); st->{f} = (_rms > 0.0 ? 100.0 + 20.0 * log10(_rms) : 0.0); }}\n"
+                    ),
+                }
+            }
+
+            // ── delay lines (shared buffer keyed by name, not node id) ──────
+            "delwrite~" => {
+                let Some(Token::Symbol(dname)) = args.first() else {
+                    self.warnings.push("delwrite~ needs a name argument — emitted as a zero stub".into());
+                    return EmittedNode { domain: Domain::Signal, state_fields: String::new(), init: String::new(), compute: String::new() };
+                };
+                let c = sanitize_c_name(dname);
+                let inp = input_expr(0, "0.0");
+                let first_time = self.declared_delay_lines.insert(dname.clone());
+                let maxms = delay_lines.get(dname).copied().unwrap_or(1000.0);
+                let (state_fields, init, destroy) = if first_time {
+                    (
+                        format!("  double* dlbuf_{c};\n  int32_t dlsize_{c};\n  int32_t dlwidx_{c};\n"),
+                        format!(
+                            "  st->dlsize_{c} = (int32_t)(({maxms} / 1000.0) * st->sample_rate) + 1;\n  if (st->dlsize_{c} < 1) st->dlsize_{c} = 1;\n  st->dlbuf_{c} = (double*)calloc((size_t)st->dlsize_{c}, sizeof(double));\n  st->dlwidx_{c} = 0;\n"
+                        ),
+                        format!("  free(st->dlbuf_{c});\n"),
+                    )
+                } else {
+                    (String::new(), String::new(), String::new())
+                };
+                destroy_stmts.push_str(&destroy);
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields,
+                    init,
+                    compute: format!(
+                        "  st->dlbuf_{c}[st->dlwidx_{c}] = {inp};\n  st->dlwidx_{c} = (st->dlwidx_{c} + 1) % st->dlsize_{c};\n"
+                    ),
+                }
+            }
+            "delread~" | "vd~" => {
+                let Some(Token::Symbol(dname)) = args.first() else {
+                    self.warnings.push(format!("{name} needs a name argument — emitted as a zero stub"));
+                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                };
+                if !delay_lines.contains_key(dname) {
+                    self.warnings.push(format!("{name} {dname}: no delwrite~ {dname} in this patch — emitted as a zero stub"));
+                    return EmittedNode { domain: Domain::Signal, state_fields: format!("  double {f};\n"), init: format!("  st->{f} = 0.0;\n"), compute: String::new() };
+                }
+                let c = sanitize_c_name(dname);
+                let delay_default = if name == "vd~" { 0.0 } else { farg(1) };
+                let delay_expr = if name == "vd~" {
+                    input_expr(0, &format!("{delay_default}"))
+                } else {
+                    format!("{delay_default}")
+                };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!(
+                        "  {{\n    int32_t _samps = (int32_t)((({delay_expr}) / 1000.0) * st->sample_rate);\n    if (_samps < 0) _samps = 0;\n    if (_samps >= st->dlsize_{c}) _samps = st->dlsize_{c} - 1;\n    int32_t _ridx = st->dlwidx_{c} - 1 - _samps;\n    while (_ridx < 0) _ridx += st->dlsize_{c};\n    st->{f} = st->dlbuf_{c}[_ridx];\n  }}\n"
                     ),
                 }
             }

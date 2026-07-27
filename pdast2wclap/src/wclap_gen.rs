@@ -193,10 +193,18 @@ fn domain_of(name: &str) -> Domain {
 /// extended with our own supported object set).
 fn outlet_count(node: &Node) -> usize {
     match &node.kind {
-        NodeKind::Obj { name, .. } => match name.as_str() {
+        NodeKind::Obj { name, args } => match name.as_str() {
             "dac~" | "send" | "s" | "print" => 0,
             "notein" => 3,
-            "vcf~" => 2,
+            "vcf~" | "moses" => 2,
+            "sel" | "select" => {
+                let n = args
+                    .iter()
+                    .filter(|t| matches!(t, Token::Float(_)))
+                    .count();
+                (n.max(1)) + 1
+            }
+            "pack" | "unpack" => args.len().max(2),
             _ => 1,
         },
         NodeKind::Gui(_) => 1,
@@ -661,6 +669,214 @@ impl WclapGenerator {
                 )
             }
 
+            // ── trig / unary math — Pd's plain (non-signal) sin/cos take a
+            //    phase in *cycles* (0..1), same convention as osc~/phasor~,
+            //    not radians; atan/atan2 return radians directly. ──────────
+            "sin" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("sin(({a}) * 6.283185307179586)"))
+            }
+            "cos" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("cos(({a}) * 6.283185307179586)"))
+            }
+            "atan" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("atan({a})"))
+            }
+            "atan2" => {
+                let a = input_expr(0, "0.0");
+                let b = input_expr(1, "0.0");
+                simple_control(id, &format!("atan2({a}, {b})"))
+            }
+            "abs" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("fabs({a})"))
+            }
+            "sqrt" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("(({a}) > 0.0 ? sqrt({a}) : 0.0)"))
+            }
+            "log" => {
+                let a = input_expr(0, "0.0");
+                let base = if args.is_empty() { 1.0 } else { farg(0) };
+                let expr = if base > 0.0 && base != 1.0 {
+                    format!("(({a}) > 0.0 ? log({a}) / {base} : 0.0)", base = base.ln())
+                } else {
+                    format!("(({a}) > 0.0 ? log({a}) : 0.0)")
+                };
+                simple_control(id, &expr)
+            }
+            "exp" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("exp({a})"))
+            }
+            "wrap" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("(({a}) - floor({a}))"))
+            }
+            "clip" => {
+                let a = input_expr(0, "0.0");
+                let lo = input_expr(1, &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }));
+                let hi = input_expr(2, &format!("{}", if args.len() < 2 { 1.0 } else { farg(1) }));
+                simple_control(
+                    id,
+                    &format!("(({a}) < ({lo}) ? ({lo}) : (({a}) > ({hi}) ? ({hi}) : ({a})))"),
+                )
+            }
+            "int" | "i" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("(double)(int64_t)({a})"))
+            }
+
+            // ── comparisons / logic ─────────────────────────────────────────
+            ">" | "<" | ">=" | "<=" | "==" | "!=" | "&&" | "||" => {
+                let a = input_expr(0, "0.0");
+                let b = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
+                let op = match name {
+                    ">" => ">",
+                    "<" => "<",
+                    ">=" => ">=",
+                    "<=" => "<=",
+                    "==" => "==",
+                    "!=" => "!=",
+                    "&&" => "&&",
+                    "||" => "||",
+                    _ => unreachable!(),
+                };
+                simple_control(id, &format!("(({a}) {op} ({b}) ? 1.0 : 0.0)"))
+            }
+            "!" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("(({a}) == 0.0 ? 1.0 : 0.0)"))
+            }
+
+            // ── unit conversions ─────────────────────────────────────────────
+            "dbtorms" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("(({a}) > 0.0 ? pow(10.0, (({a}) - 100.0) / 20.0) : 0.0)"))
+            }
+            "rmstodb" => {
+                let a = input_expr(0, "0.0");
+                simple_control(
+                    id,
+                    &format!("(({a}) > 0.0 ? 100.0 + 20.0 * (log10({a})) : 0.0)"),
+                )
+            }
+            "dbtopow" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &format!("(({a}) > 0.0 ? pow(10.0, (({a}) - 100.0) / 10.0) : 0.0)"))
+            }
+            "powtodb" => {
+                let a = input_expr(0, "0.0");
+                simple_control(
+                    id,
+                    &format!("(({a}) > 0.0 ? 100.0 + 10.0 * (log10({a})) : 0.0)"),
+                )
+            }
+
+            // ── routing (continuous approximations — see README for what's
+            //    lost vs. real discrete message/bang semantics) ────────────
+            "moses" => {
+                let a = input_expr(0, "0.0");
+                let thresh = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
+                let o0 = field(id);
+                let o1 = field_o(id, 1);
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields: format!("  double {o0};\n  double {o1};\n"),
+                    init: format!("  st->{o0} = 0.0; st->{o1} = 0.0;\n"),
+                    compute: format!(
+                        "  {{ double _v = {a}, _t = {thresh}; st->{o0} = (_v < _t) ? _v : 0.0; st->{o1} = (_v >= _t) ? _v : 0.0; }}\n"
+                    ),
+                }
+            }
+            "spigot" => {
+                let a = input_expr(0, "0.0");
+                let gate = input_expr(
+                    1,
+                    &format!("{}", if args.is_empty() { 0.0 } else { farg(0) }),
+                );
+                simple_control(id, &format!("(({gate}) != 0.0 ? ({a}) : 0.0)"))
+            }
+            "sel" | "select" => {
+                let a = input_expr(0, "0.0");
+                let targets: Vec<f64> = if args.is_empty() {
+                    vec![0.0]
+                } else {
+                    args.iter()
+                        .filter_map(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+                        .collect()
+                };
+                let mut compute = String::new();
+                let mut state_fields = String::new();
+                let mut init = String::new();
+                for (i, t) in targets.iter().enumerate() {
+                    let fld = field_o(id, i as u32);
+                    state_fields.push_str(&format!("  double {fld};\n"));
+                    init.push_str(&format!("  st->{fld} = 0.0;\n"));
+                    compute.push_str(&format!(
+                        "  st->{fld} = (({a}) == ({t}) ? 1.0 : 0.0);\n"
+                    ));
+                }
+                // Last outlet: pass the input through when nothing matched.
+                let pass_fld = field_o(id, targets.len() as u32);
+                state_fields.push_str(&format!("  double {pass_fld};\n"));
+                init.push_str(&format!("  st->{pass_fld} = 0.0;\n"));
+                let matches_any = targets
+                    .iter()
+                    .map(|t| format!("(({a}) == ({t}))"))
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                compute.push_str(&format!(
+                    "  st->{pass_fld} = (!({matches_any})) ? ({a}) : 0.0;\n"
+                ));
+                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+            }
+            "change" => {
+                // Continuous approximation: mirrors the input every recompute
+                // (real PD only outputs on an actual change/bang) — see README.
+                let a = input_expr(0, "0.0");
+                simple_control(id, &a)
+            }
+            "pack" => {
+                let n = args.len().max(2);
+                let mut state_fields = String::new();
+                let mut init = String::new();
+                let mut compute = String::new();
+                for i in 0..n {
+                    let fld = field_o(id, i as u32);
+                    let default = format!("{}", args.get(i).and_then(|t| if let Token::Float(v)=t {Some(*v)} else {None}).unwrap_or(0.0));
+                    let v = input_expr(i as u32, &default);
+                    state_fields.push_str(&format!("  double {fld};\n"));
+                    init.push_str(&format!("  st->{fld} = 0.0;\n"));
+                    compute.push_str(&format!("  st->{fld} = {v};\n"));
+                }
+                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+            }
+            "unpack" => {
+                // Single numeric input feeds every outlet identically (no
+                // real list-splitting since we carry scalars, not lists).
+                let n = args.len().max(2);
+                let a = input_expr(0, "0.0");
+                let mut state_fields = String::new();
+                let mut init = String::new();
+                let mut compute = String::new();
+                for i in 0..n {
+                    let fld = field_o(id, i as u32);
+                    state_fields.push_str(&format!("  double {fld};\n"));
+                    init.push_str(&format!("  st->{fld} = 0.0;\n"));
+                    compute.push_str(&format!("  st->{fld} = {a};\n"));
+                }
+                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+            }
+
             // ── MIDI note input (real events, wired by runtime-shim.c via
             //    pd_note_on/pd_note_off — NOT recomputed per control pass) ──
             "notein" => EmittedNode {
@@ -927,8 +1143,13 @@ fn render_output(inp: RenderInput) -> String {
     out.push_str(&format!("  *out_r_sample = (float)({dac_r_sum});\n"));
     out.push_str("}\n\n");
 
+    // Control graph is recomputed on every note/param event (below) AND
+    // once per process() call, so time-driven objects (line~, delay lines,
+    // envelopes) and any pure-control chain downstream of them still see
+    // fresh values even with no event in a given block — matching how
+    // audio plugins commonly quantize control-rate updates to block size.
     out.push_str(
-        "void pd_process(PdState* st, const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t nframes) {\n  for (uint32_t i = 0; i < nframes; i++) {\n    float il = in_l ? in_l[i] : 0.0f;\n    float ir = in_r ? in_r[i] : 0.0f;\n    pd_signal_step(st, il, ir, &out_l[i], &out_r[i]);\n  }\n}\n\n",
+        "void pd_process(PdState* st, const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t nframes) {\n  pd_control_recompute(st);\n  for (uint32_t i = 0; i < nframes; i++) {\n    float il = in_l ? in_l[i] : 0.0f;\n    float ir = in_r ? in_r[i] : 0.0f;\n    pd_signal_step(st, il, ir, &out_l[i], &out_r[i]);\n  }\n}\n\n",
     );
 
     // Note on/off: monophonic (matches poketrack's single-active-note host

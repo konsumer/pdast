@@ -197,7 +197,7 @@ fn outlet_count(node: &Node) -> usize {
             "dac~" | "send" | "s" | "print" | "delwrite~" => 0,
             "notein" => 3,
             "vcf~" | "moses" => 2,
-            "sel" | "select" => {
+            "sel" | "select" | "route" => {
                 let n = args
                     .iter()
                     .filter(|t| matches!(t, Token::Float(_)))
@@ -205,6 +205,7 @@ fn outlet_count(node: &Node) -> usize {
                 (n.max(1)) + 1
             }
             "pack" | "unpack" => args.len().max(2),
+            "trigger" | "t" => args.len().max(1),
             _ => 1,
         },
         NodeKind::Gui(_) => 1,
@@ -949,6 +950,82 @@ impl WclapGenerator {
                 // (real PD only outputs on an actual change/bang) — see README.
                 let a = input_expr(0, "0.0");
                 simple_control(id, &a)
+            }
+            // Like sel/select, but passes the matched *value* through (not
+            // just a 1.0 flag), and passes non-matches to the last outlet —
+            // matches real PD route semantics for numeric matching.
+            "route" => {
+                let a = input_expr(0, "0.0");
+                let targets: Vec<f64> = args
+                    .iter()
+                    .filter_map(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+                    .collect();
+                let targets = if targets.is_empty() { vec![0.0] } else { targets };
+                let mut compute = String::new();
+                let mut state_fields = String::new();
+                let mut init = String::new();
+                for (i, t) in targets.iter().enumerate() {
+                    let fld = field_o(id, i as u32);
+                    state_fields.push_str(&format!("  double {fld};\n"));
+                    init.push_str(&format!("  st->{fld} = 0.0;\n"));
+                    compute.push_str(&format!("  st->{fld} = (({a}) == ({t}) ? ({a}) : 0.0);\n"));
+                }
+                let pass_fld = field_o(id, targets.len() as u32);
+                state_fields.push_str(&format!("  double {pass_fld};\n"));
+                init.push_str(&format!("  st->{pass_fld} = 0.0;\n"));
+                let matches_any = targets
+                    .iter()
+                    .map(|t| format!("(({a}) == ({t}))"))
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                compute.push_str(&format!("  st->{pass_fld} = (!({matches_any})) ? ({a}) : 0.0;\n"));
+                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+            }
+            // Numeric fan-out: every outlet mirrors the input. Real PD's
+            // trigger also converts per-outlet type (bang/symbol/float) and
+            // fires right-to-left for ordered side effects — neither
+            // applies to our scalar, continuously-recomputed model.
+            "trigger" | "t" => {
+                let a = input_expr(0, "0.0");
+                let n = args.len().max(1);
+                let mut state_fields = String::new();
+                let mut init = String::new();
+                let mut compute = String::new();
+                for i in 0..n {
+                    let fld = field_o(id, i as u32);
+                    state_fields.push_str(&format!("  double {fld};\n"));
+                    init.push_str(&format!("  st->{fld} = 0.0;\n"));
+                    compute.push_str(&format!("  st->{fld} = {a};\n"));
+                }
+                EmittedNode { domain: Domain::Control, state_fields, init, compute }
+            }
+            // Control-rate ramp toward the input value over a creation-arg
+            // time (ms), updated once per control recompute (block rate)
+            // rather than per-sample — see line~ for the signal-rate version.
+            "line" => {
+                let target = input_expr(0, "0.0");
+                let ramp_ms = if args.is_empty() { 20.0 } else { farg(0) };
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!(
+                        "  {{ double _c = 1.0 - exp(-1000.0 / (({ramp_ms}) > 0.001 ? ({ramp_ms}) : 0.001) / st->sample_rate * 64.0); if (_c > 1.0) _c = 1.0; st->{f} += _c * (({target}) - st->{f}); }}\n"
+                    ),
+                }
+            }
+            // Regenerated on every control recompute rather than only on a
+            // bang (see README's discrete-message caveats).
+            "random" => {
+                let range = if args.is_empty() { 1.0 } else { farg(0) };
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields: format!("  unsigned int {f}_seed;\n  double {f};\n"),
+                    init: format!("  st->{f}_seed = 12345u + {id}u; st->{f} = 0.0;\n"),
+                    compute: format!(
+                        "  {{ st->{f}_seed = st->{f}_seed * 1103515245u + 12345u; double _r = (double)((st->{f}_seed >> 8) & 0x7fffff) / (double)0x800000; st->{f} = floor(_r * ({range})); }}\n"
+                    ),
+                }
             }
             "pack" => {
                 let n = args.len().max(2);

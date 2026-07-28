@@ -197,6 +197,13 @@ fn outlet_count(node: &Node) -> usize {
             "dac~" | "send" | "s" | "print" | "delwrite~" => 0,
             "notein" => 3,
             "vcf~" | "moses" => 2,
+            "ctlin" => {
+                if args.first().is_some_and(|t| matches!(t, Token::Float(_))) {
+                    1
+                } else {
+                    2
+                }
+            }
             "sel" | "select" | "route" => {
                 let n = args.iter().filter(|t| matches!(t, Token::Float(_))).count();
                 (n.max(1)) + 1
@@ -512,6 +519,43 @@ impl WclapGenerator {
             .find(|n| matches!(&n.kind, NodeKind::Obj{name,..} if name=="notein"))
             .map(|n| n.id);
         let has_note_in = notein_id.is_some();
+
+        // ctlin optionally filters to one controller# (first creation arg);
+        // with none it reports every CC on 2 outlets (value, controller#).
+        let ctlin_nodes: Vec<(u32, Option<i32>)> = active
+            .iter()
+            .filter_map(|n| {
+                if let NodeKind::Obj { name, args } = &n.kind {
+                    if name == "ctlin" {
+                        let filter = args.first().and_then(|t| {
+                            if let Token::Float(v) = t {
+                                Some(*v as i32)
+                            } else {
+                                None
+                            }
+                        });
+                        return Some((n.id, filter));
+                    }
+                }
+                None
+            })
+            .collect();
+        let bendin_ids: Vec<u32> = active
+            .iter()
+            .filter(|n| matches!(&n.kind, NodeKind::Obj{name,..} if name=="bendin"))
+            .map(|n| n.id)
+            .collect();
+        let touchin_ids: Vec<u32> = active
+            .iter()
+            .filter(|n| matches!(&n.kind, NodeKind::Obj{name,..} if name=="touchin"))
+            .map(|n| n.id)
+            .collect();
+        let pgmin_ids: Vec<u32> = active
+            .iter()
+            .filter(|n| matches!(&n.kind, NodeKind::Obj{name,..} if name=="pgmin"))
+            .map(|n| n.id)
+            .collect();
+
         let delay_lines = collect_delay_lines(&active);
         let arrays = collect_arrays(&nodes);
 
@@ -582,6 +626,10 @@ impl WclapGenerator {
             has_audio_in,
             has_note_in,
             notein_id,
+            ctlin_nodes,
+            bendin_ids,
+            touchin_ids,
+            pgmin_ids,
         })
     }
 
@@ -1153,6 +1201,35 @@ impl WclapGenerator {
                     o2 = field_o(id, 2)
                 ),
                 compute: String::new(), // written directly by pd_note_on/off
+            },
+
+            // ── MIDI CC / bend / touch / program (real events, written
+            //    externally by pd_control_change/pd_pitch_bend/pd_touch/
+            //    pd_program_change) ─────────────────────────────────────────
+            "ctlin" => {
+                let has_filter = args.first().is_some_and(|t| matches!(t, Token::Float(_)));
+                let o1 = field_o(id, 1);
+                if has_filter {
+                    EmittedNode {
+                        domain: Domain::Control,
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    }
+                } else {
+                    EmittedNode {
+                        domain: Domain::Control,
+                        state_fields: format!("  double {f};\n  double {o1};\n"),
+                        init: format!("  st->{f} = 0.0; st->{o1} = 0.0;\n"),
+                        compute: String::new(),
+                    }
+                }
+            }
+            "bendin" | "touchin" | "pgmin" => EmittedNode {
+                domain: Domain::Control,
+                state_fields: format!("  double {f};\n"),
+                init: format!("  st->{f} = 0.0;\n"),
+                compute: String::new(),
             },
 
             // ── dac~ / adc~ ──────────────────────────────────────────────────
@@ -1729,6 +1806,10 @@ struct RenderInput<'a> {
     has_audio_in: bool,
     has_note_in: bool,
     notein_id: Option<u32>,
+    ctlin_nodes: Vec<(u32, Option<i32>)>,
+    bendin_ids: Vec<u32>,
+    touchin_ids: Vec<u32>,
+    pgmin_ids: Vec<u32>,
 }
 
 fn render_output(inp: RenderInput) -> String {
@@ -1812,6 +1893,60 @@ fn render_output(inp: RenderInput) -> String {
     }
     out.push_str("  pd_control_recompute(st);\n}\n\n");
 
+    out.push_str("void pd_control_change(PdState* st, int32_t controller, double value) {\n");
+    if inp.ctlin_nodes.is_empty() {
+        out.push_str("  (void)st; (void)controller; (void)value;\n");
+    } else {
+        for &(nid, filter) in &inp.ctlin_nodes {
+            match filter {
+                Some(cc) => out.push_str(&format!(
+                    "  if (controller == {cc}) {{ st->{f} = value; }}\n",
+                    f = field(nid)
+                )),
+                None => out.push_str(&format!(
+                    "  st->{f} = value; st->{fo1} = (double)controller;\n",
+                    f = field(nid),
+                    fo1 = field_o(nid, 1)
+                )),
+            }
+        }
+        out.push_str("  pd_control_recompute(st);\n");
+    }
+    out.push_str("}\n\n");
+
+    out.push_str("void pd_pitch_bend(PdState* st, double value) {\n");
+    if inp.bendin_ids.is_empty() {
+        out.push_str("  (void)st; (void)value;\n");
+    } else {
+        for &nid in &inp.bendin_ids {
+            out.push_str(&format!("  st->{f} = value;\n", f = field(nid)));
+        }
+        out.push_str("  pd_control_recompute(st);\n");
+    }
+    out.push_str("}\n\n");
+
+    out.push_str("void pd_touch(PdState* st, double value) {\n");
+    if inp.touchin_ids.is_empty() {
+        out.push_str("  (void)st; (void)value;\n");
+    } else {
+        for &nid in &inp.touchin_ids {
+            out.push_str(&format!("  st->{f} = value;\n", f = field(nid)));
+        }
+        out.push_str("  pd_control_recompute(st);\n");
+    }
+    out.push_str("}\n\n");
+
+    out.push_str("void pd_program_change(PdState* st, double value) {\n");
+    if inp.pgmin_ids.is_empty() {
+        out.push_str("  (void)st; (void)value;\n");
+    } else {
+        for &nid in &inp.pgmin_ids {
+            out.push_str(&format!("  st->{f} = value;\n", f = field(nid)));
+        }
+        out.push_str("  pd_control_recompute(st);\n");
+    }
+    out.push_str("}\n\n");
+
     out.push_str("void pd_set_param(PdState* st, int32_t index, double value) {\n");
     out.push_str("  switch (index) {\n");
     for (i, p) in inp.params.iter().enumerate() {
@@ -1862,6 +1997,22 @@ fn render_output(inp: RenderInput) -> String {
     out.push_str(&format!(
         "const int PD_HAS_NOTE_IN = {};\n",
         if inp.has_note_in { 1 } else { 0 }
+    ));
+    out.push_str(&format!(
+        "const int PD_HAS_CTL_IN = {};\n",
+        if inp.ctlin_nodes.is_empty() { 0 } else { 1 }
+    ));
+    out.push_str(&format!(
+        "const int PD_HAS_BEND_IN = {};\n",
+        if inp.bendin_ids.is_empty() { 0 } else { 1 }
+    ));
+    out.push_str(&format!(
+        "const int PD_HAS_TOUCH_IN = {};\n",
+        if inp.touchin_ids.is_empty() { 0 } else { 1 }
+    ));
+    out.push_str(&format!(
+        "const int PD_HAS_PGM_IN = {};\n",
+        if inp.pgmin_ids.is_empty() { 0 } else { 1 }
     ));
 
     out

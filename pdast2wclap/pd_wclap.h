@@ -24,6 +24,10 @@ extern const int PD_NUM_PARAMS;
 extern const PdParamInfo PD_PARAMS[];
 extern const int PD_HAS_AUDIO_IN;  // patch uses adc~
 extern const int PD_HAS_NOTE_IN;   // patch uses notein
+extern const int PD_HAS_CTL_IN;    // patch uses ctlin
+extern const int PD_HAS_BEND_IN;   // patch uses bendin
+extern const int PD_HAS_TOUCH_IN;  // patch uses touchin
+extern const int PD_HAS_PGM_IN;    // patch uses pgmin
 
 // ── Lifecycle ────────────────────────────────────────────────────────────
 PdState* pd_create(double sample_rate);
@@ -32,9 +36,13 @@ void pd_destroy(PdState* st);
 // ── Audio ────────────────────────────────────────────────────────────────
 // Renders `nframes` samples of audio-rate signal into out_l/out_r. in_l/in_r
 // may be NULL (no audio input wired to this instance, e.g. instrument
-// contexts) — treated as silence. Does NOT recompute the control graph;
-// call pd_note_on/pd_note_off/pd_set_param between pd_process() calls to
-// split a block at each event's sample-accurate time offset.
+// contexts) — treated as silence. Also recomputes the control graph once at
+// the start of the call (in addition to the event functions below doing so
+// on their own), so time-driven objects (line~, metro, delay lines) and any
+// pure-control chain downstream of them stay live even in a block with no
+// events. Call pd_note_on/pd_note_off/pd_set_param/etc. *between*
+// pd_process() calls to split a block at each event's sample-accurate time
+// offset, rather than applying a whole block's events up front.
 void pd_process(PdState* st, const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t nframes);
 
 // ── Events (control-rate, applied instantaneously in "logical time" —
@@ -45,6 +53,17 @@ void pd_process(PdState* st, const float* in_l, const float* in_r, float* out_l,
 // do not assume 0-127 here).
 void pd_note_on(PdState* st, int16_t key, double velocity01);
 void pd_note_off(PdState* st, int16_t key, double velocity01);
+
+// MIDI CC / pitch bend / channel pressure / program change — drives any
+// ctlin/bendin/touchin/pgmin objects in the patch. Always safe to call even
+// if the patch has none (no-op); check PD_HAS_*_IN first to skip the call
+// entirely if you'd rather not bother routing the event.
+// `controller`/`value` follow Pd's own conventions: CC value and channel
+// pressure are 0..127; pitch bend is 0..16383 with 8192 == center.
+void pd_control_change(PdState* st, int32_t controller, double value);
+void pd_pitch_bend(PdState* st, double value);
+void pd_touch(PdState* st, double value);
+void pd_program_change(PdState* st, double value);
 
 // `index` is the position of the param in PD_PARAMS[]; `value` is already
 // scaled into that param's [min, max] range (not a normalized 0..1).

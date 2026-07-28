@@ -1574,6 +1574,75 @@ impl WclapGenerator {
                 }
             }
 
+            // ── scheduler: metro / delay / pipe / timer ─────────────────────
+            // These are control-domain objects in real PD, but need
+            // sample-accurate timing, so their compute lives in
+            // pd_signal_step (forced Domain::Signal) even though their
+            // *output* is meant to be read as a control value — any
+            // control-domain consumer just reads whatever pd_signal_step
+            // last wrote, same as reading any other cross-domain field.
+            //
+            // None of these have a real "bang" input in our continuous
+            // model, so each is driven by *edges* on inlet 0's value
+            // instead: metro runs while it's nonzero (typically a toggle),
+            // delay/pipe/timer (re)trigger on a rising edge or a value
+            // change — see README for the full discrete-message caveat.
+            "metro" => {
+                let gate = input_expr(0, "0.0");
+                let period_ms = if args.is_empty() { 200.0 } else { farg(0) };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_ctr;\n  double {f}_pg;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_ctr = 0.0; st->{f}_pg = 0.0;\n"),
+                    compute: format!(
+                        "  {{\n    double _gate = ({gate}) != 0.0 ? 1.0 : 0.0;\n    double _bang = 0.0;\n    double _period = (({period_ms}) / 1000.0) * st->sample_rate;\n    if (_period < 1.0) _period = 1.0;\n    if (_gate != 0.0) {{\n      if (st->{f}_pg == 0.0) {{ _bang = 1.0; st->{f}_ctr = 0.0; }}\n      else {{\n        st->{f}_ctr += 1.0;\n        if (st->{f}_ctr >= _period) {{ _bang = 1.0; st->{f}_ctr = 0.0; }}\n      }}\n    }} else {{ st->{f}_ctr = 0.0; }}\n    st->{f} = _bang;\n    st->{f}_pg = _gate;\n  }}\n"
+                    ),
+                }
+            }
+            "delay" | "del" => {
+                let gate = input_expr(0, "0.0");
+                let delay_ms = if args.is_empty() { 0.0 } else { farg(0) };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!(
+                        "  double {f};\n  double {f}_ctr;\n  double {f}_pg;\n  double {f}_armed;\n"
+                    ),
+                    init: format!(
+                        "  st->{f} = 0.0; st->{f}_ctr = 0.0; st->{f}_pg = 0.0; st->{f}_armed = 0.0;\n"
+                    ),
+                    compute: format!(
+                        "  {{\n    double _gate = ({gate}) != 0.0 ? 1.0 : 0.0;\n    double _bang = 0.0;\n    double _delay = (({delay_ms}) / 1000.0) * st->sample_rate;\n    if (_gate != 0.0 && st->{f}_pg == 0.0) {{ st->{f}_armed = 1.0; st->{f}_ctr = 0.0; }}\n    if (st->{f}_armed != 0.0) {{\n      st->{f}_ctr += 1.0;\n      if (st->{f}_ctr >= _delay) {{ _bang = 1.0; st->{f}_armed = 0.0; }}\n    }}\n    st->{f} = _bang;\n    st->{f}_pg = _gate;\n  }}\n"
+                    ),
+                }
+            }
+            "pipe" => {
+                let v = input_expr(0, "0.0");
+                let delay_ms = if args.is_empty() { 0.0 } else { farg(0) };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!(
+                        "  double {f};\n  double {f}_ctr;\n  double {f}_pv;\n  double {f}_val;\n  double {f}_armed;\n"
+                    ),
+                    init: format!(
+                        "  st->{f} = 0.0; st->{f}_ctr = 0.0; st->{f}_pv = 0.0; st->{f}_val = 0.0; st->{f}_armed = 0.0;\n"
+                    ),
+                    compute: format!(
+                        "  {{\n    double _v = {v};\n    double _out = 0.0;\n    double _delay = (({delay_ms}) / 1000.0) * st->sample_rate;\n    if (_v != st->{f}_pv) {{ st->{f}_armed = 1.0; st->{f}_ctr = 0.0; st->{f}_val = _v; }}\n    if (st->{f}_armed != 0.0) {{\n      st->{f}_ctr += 1.0;\n      if (st->{f}_ctr >= _delay) {{ _out = st->{f}_val; st->{f}_armed = 0.0; }}\n    }}\n    st->{f} = _out;\n    st->{f}_pv = _v;\n  }}\n"
+                    ),
+                }
+            }
+            "timer" => {
+                let gate = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n  double {f}_ctr;\n  double {f}_pg;\n"),
+                    init: format!("  st->{f} = 0.0; st->{f}_ctr = 0.0; st->{f}_pg = 0.0;\n"),
+                    compute: format!(
+                        "  {{\n    double _gate = ({gate}) != 0.0 ? 1.0 : 0.0;\n    if (_gate != 0.0 && st->{f}_pg == 0.0) {{ st->{f}_ctr = 0.0; }} else {{ st->{f}_ctr += 1.0; }}\n    st->{f} = (st->{f}_ctr / st->sample_rate) * 1000.0;\n    st->{f}_pg = _gate;\n  }}\n"
+                    ),
+                }
+            }
+
             // ── delay lines (shared buffer keyed by name, not node id) ──────
             "delwrite~" => {
                 let Some(Token::Symbol(dname)) = args.first() else {
@@ -2154,6 +2223,40 @@ mod tests {
         // pd_note_on must write into notein's own field (n0), not some
         // downstream node's.
         assert!(c.contains("st->n0 = (double)key;"), "{c}");
+    }
+
+    // Timing correctness for metro/delay/pipe is verified separately by
+    // compiling the generated C and running it (see PR description) — a
+    // 5ms metro produces exact 240-sample gaps at 48kHz, and delay fires
+    // exactly once on a rising edge. This test just locks down that the
+    // scheduler objects land in the *signal* domain (sample-accurate
+    // timing) even though they're not tilde objects, and that their state
+    // includes edge-detection fields.
+    #[test]
+    fn metro_and_delay_are_signal_domain_with_edge_detection() {
+        let src = "#N canvas 0 50 450 300 12;\r\n\
+                    #X obj 20 20 r gate;\r\n\
+                    #X obj 20 60 metro 5;\r\n\
+                    #X obj 20 100 delay 5;\r\n\
+                    #X obj 20 140 dac~;\r\n\
+                    #X connect 0 0 1 0;\r\n\
+                    #X connect 1 0 2 0;\r\n\
+                    #X connect 2 0 3 0;\r\n\
+                    #X connect 2 0 3 1;\r\n";
+        let (c, warn) = generate_c(src);
+        assert!(warn.is_empty(), "unexpected warnings: {warn:?}");
+        // metro's compute must be in pd_signal_step (between the function
+        // header and pd_process), not in pd_control_recompute.
+        let sig_start = c.find("pd_signal_step").unwrap();
+        let sig_body = &c[sig_start..c.find("void pd_process").unwrap()];
+        assert!(
+            sig_body.contains("_pg"),
+            "metro/delay edge-detection missing from signal step: {c}"
+        );
+        assert!(
+            c.contains("n1_armed") || c.contains("n2_armed"),
+            "delay's arm/countdown state missing: {c}"
+        );
     }
 
     #[test]

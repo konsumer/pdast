@@ -32,14 +32,20 @@ clang --target=wasm32-wasi -mexec-model=reactor \
 
 ## The `pd_*` ABI (`pd_wclap.h`)
 
-| Symbol                                                                 | What it does                                                                                                           |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `pd_create(sample_rate)` / `pd_destroy(st)`                            | Lifecycle                                                                                                              |
-| `pd_process(st, in_l, in_r, out_l, out_r, nframes)`                    | Recomputes the control graph once, then renders `nframes` of audio                                                     |
-| `pd_note_on(st, key, velocity01)` / `pd_note_off(st, key, velocity01)` | Apply a note event (velocity already 0..1) and recompute the control graph                                             |
-| `pd_set_param(st, index, value)` / `pd_get_param(st, index)`           | Apply/read a param by its index into `PD_PARAMS[]` (value already scaled into that param's real range, not normalized) |
-| `PD_NUM_PARAMS`, `PD_PARAMS[]`                                         | Param table: name, min, max, default                                                                                   |
-| `PD_HAS_AUDIO_IN`, `PD_HAS_NOTE_IN`                                    | Whether the patch used `adc~` / any MIDI-in object                                                                     |
+| Symbol                                                                                                     | What it does                                                                                                                                 |
+| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pd_create(sample_rate)` / `pd_destroy(st)`                                                                | Lifecycle                                                                                                                                    |
+| `pd_process(st, in_l, in_r, out_l, out_r, nframes)`                                                        | Recomputes the control graph once, then renders `nframes` of audio                                                                           |
+| `pd_note_on(st, key, velocity01)` / `pd_note_off(st, key, velocity01)`                                     | Apply a note event (velocity already 0..1) and recompute the control graph                                                                   |
+| `pd_control_change(st, controller, value)`                                                                 | MIDI CC — drives any `ctlin` objects (`controller`/`value` 0..127)                                                                           |
+| `pd_pitch_bend(st, value)`                                                                                 | Pitch bend — drives any `bendin` objects (0..16383, 8192 == center)                                                                          |
+| `pd_touch(st, value)`                                                                                      | Channel pressure — drives any `touchin` objects (0..127)                                                                                     |
+| `pd_program_change(st, value)`                                                                             | Program change — drives any `pgmin` objects (0..127)                                                                                         |
+| `pd_set_param(st, index, value)` / `pd_get_param(st, index)`                                               | Apply/read a param by its index into `PD_PARAMS[]` (value already scaled into that param's real range, not normalized)                       |
+| `PD_NUM_PARAMS`, `PD_PARAMS[]`                                                                             | Param table: name, min, max, default                                                                                                         |
+| `PD_HAS_AUDIO_IN`, `PD_HAS_NOTE_IN`, `PD_HAS_CTL_IN`, `PD_HAS_BEND_IN`, `PD_HAS_TOUCH_IN`, `PD_HAS_PGM_IN` | Whether the patch used `adc~` / `notein` / `ctlin` / `bendin` / `touchin` / `pgmin` — a host can skip routing events a patch never asked for |
+
+The MIDI CC/bend/touch/program functions are always safe to call (no-op if the patch has no matching object) — no host is required to call them, and poketrack's own host (see `plugins/pd2wclap` in the poketrack repo) currently doesn't, since it never forwards raw MIDI CC/bend/touch/program-change events to CLAP plugins in the first place. They exist for hosts that do.
 
 A host is expected to split a process block at each event's sample-accurate time offset — call `pd_process()` for the frames up to an event, then `pd_note_on`/`pd_note_off`/`pd_set_param`, then continue — rather than applying all of a block's events up front. `pd_process()` also recomputes the control graph once at the start of every call (in addition to the per-event recomputes above), so time-driven objects (`line~`, delay lines, envelopes) and any pure-control chain downstream of them keep updating even in a block with no events — control-rate updates are quantized to block size, same as most real-time plugin formats.
 
@@ -58,26 +64,35 @@ Any `[receive NAME]` / `[r NAME]` / `[value NAME]` object with no matching `[sen
 | Delay lines         | `delwrite~`, `delread~`, `vd~` (shared circular buffer, keyed by name)                                                                                                 |
 | Arrays / tables     | `tabread~`, `tabread`, `tabwrite~`, and the array data itself (seeded from the saved patch)                                                                            |
 | Audio I/O           | `dac~`, `adc~`                                                                                                                                                         |
-| MIDI                | `notein` (real note events, not UI-metadata)                                                                                                                           |
+| MIDI                | `notein`, `ctlin`, `bendin`, `touchin`, `pgmin` (real events, not UI-metadata)                                                                                         |
+| Scheduler           | `metro`, `delay`/`del`, `pipe`, `timer` — sample-accurate, see below                                                                                                   |
 | Control math        | `+ - * / max min mod pow`, `sin cos atan atan2 abs sqrt log exp wrap clip int`, comparisons (`> < >= <= == != && \|\| !`), `mtof ftom dbtorms rmstodb dbtopow powtodb` |
 | Routing             | `moses`, `spigot`, `sel`/`select`, `route`, `change`, `pack`, `unpack`, `trigger`/`t`, `line`, `random`                                                                |
 | Buses               | `send` / `s`, `receive` / `r`, `value`                                                                                                                                 |
 
-Anything else compiles to a harmless zero stub with a `warning:` on stderr rather than failing — the per-object codegen (`wclap_gen.rs`) is built to grow this list. Not yet implemented: `ctlin`/`bendin`/`touchin`/`pgmin` (see note below), `metro`/`delay`/`timer`/`pipe` (genuine wall-clock-scheduled bangs), `expr`/`expr~`, `cpole~`/`czero~`, multi-message boxes, and symbol/list-typed routing.
+Anything else compiles to a harmless zero stub with a `warning:` on stderr rather than failing — the per-object codegen (`wclap_gen.rs`) is built to grow this list. Not yet implemented: `expr`/`expr~`, `cpole~`/`czero~`, multi-message boxes, and symbol/list-typed routing.
+
+### `metro`/`delay`/`pipe`/`timer`: real, sample-accurate scheduling
+
+These aren't tilde objects, but their timing math runs every sample (forced into the signal domain internally) rather than only at control-recompute time, so they're accurate regardless of block size — verified by compiling generated code and running it: a `metro 5` at 48kHz produces pulses at exactly 240-sample intervals, and `delay 5` fires exactly once, ~240 samples after being triggered. None of them have a real discrete "bang" input in this continuous model, so they're driven by _edges_ on inlet 0 instead:
+
+- `metro` runs (re-fires periodically) while inlet 0 is nonzero — pair it with a toggle or a mapped param, not a one-shot bang.
+- `delay`/`del` (re)arms on a rising edge (0 → nonzero) of inlet 0.
+- `pipe` (re)arms whenever inlet 0's value _changes_, and forwards that value (not just a bang) once the delay elapses.
+- `timer` continuously reports elapsed ms since inlet 0's last rising edge, rather than only on a second bang.
 
 ### Discrete message/bang semantics: what's approximated
 
 pdast2wclap's control graph is _continuous_ — every control node's value is recomputed on each event/block, not driven by discrete one-shot messages. This is a better fit for most of vanilla PD than pdast2faust's per-sample recompute (see below), but a few real objects are fundamentally message/bang-driven and only get an honest approximation here:
 
-| PD object                      | Here                                             | What's lost                                                                                 |
-| ------------------------------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `change`                       | Always mirrors input                             | Real `change` only outputs when the value differs                                           |
-| `snapshot~`                    | Continuously mirrors the signal's current sample | Real `snapshot~` captures only on a bang                                                    |
-| `threshold~`                   | Continuous 0/1 gate                              | Real `threshold~` bangs once on crossing                                                    |
-| `tabwrite~`                    | Continuous circular recording                    | Real `tabwrite~` is a bang-armed one-shot recording                                         |
-| `random`                       | Regenerated every recompute                      | Real `random` only regenerates on a bang                                                    |
-| `line` / `line~`               | Exponential ramp toward the input, fixed time    | Real `line` takes a `(target, time)` message pair per ramp — no per-call time override here |
-| `metro`/`delay`/`timer`/`pipe` | Not implemented (zero stub)                      | These need a real wall-clock scheduler, not just a continuously-recomputed graph            |
+| PD object        | Here                                             | What's lost                                                                                 |
+| ---------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `change`         | Always mirrors input                             | Real `change` only outputs when the value differs                                           |
+| `snapshot~`      | Continuously mirrors the signal's current sample | Real `snapshot~` captures only on a bang                                                    |
+| `threshold~`     | Continuous 0/1 gate                              | Real `threshold~` bangs once on crossing                                                    |
+| `tabwrite~`      | Continuous circular recording                    | Real `tabwrite~` is a bang-armed one-shot recording                                         |
+| `random`         | Regenerated every recompute                      | Real `random` only regenerates on a bang                                                    |
+| `line` / `line~` | Exponential ramp toward the input, fixed time    | Real `line` takes a `(target, time)` message pair per ramp — no per-call time override here |
 
 ## Fixes vs. `pdast2faust`
 
@@ -85,8 +100,4 @@ This backend fixes three gaps present in `pdast2faust`: `$1`/`$2` creation-args 
 
 ## Control-rate semantics
 
-Unlike `pdast2faust` (which recomputes every control object on every audio sample — see the semantic caveats above), `pdast2wclap` recomputes the control graph only at actual event boundaries (a note or a mapped param changing) plus once per `pd_process()` call, matching PD's own message-passing behaviour much more closely. A control value feeding a signal-rate inlet is sample-and-held between updates, same as real PD.
-
-## Note on `ctlin`/`bendin`
-
-The `pd_*` ABI has no MIDI-CC or pitch-bend hooks yet. This isn't a codegen gap so much as a host one: poketrack (the one real host this ships against today, in `plugins/pd2wclap`) never forwards raw MIDI CC/pitch-bend events to CLAP plugins in the first place — only note on/off and its own generic param automation — so `pd_control_change`/`pd_pitch_bend` functions would be unreachable dead code against that host. Adding them makes sense once there's a host that actually delivers those events; the object-classification/event-wiring pattern already established for `notein` (see `wclap_gen.rs`) is the template to follow.
+Unlike `pdast2faust` (which recomputes every control object on every audio sample — see the semantic caveats above), `pdast2wclap` recomputes the control graph only at actual event boundaries (a note, MIDI CC/bend/touch/program event, or a mapped param changing) plus once per `pd_process()` call, matching PD's own message-passing behaviour much more closely. A control value feeding a signal-rate inlet is sample-and-held between updates, same as real PD.

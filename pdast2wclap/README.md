@@ -35,8 +35,8 @@ clang --target=wasm32-wasi -mexec-model=reactor \
 | Symbol                                                                                                     | What it does                                                                                                                                 |
 | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pd_create(sample_rate)` / `pd_destroy(st)`                                                                | Lifecycle                                                                                                                                    |
-| `pd_process(st, in_l, in_r, out_l, out_r, nframes)`                                                        | Recomputes the control graph once, then renders `nframes` of audio                                                                           |
-| `pd_note_on(st, key, velocity01)` / `pd_note_off(st, key, velocity01)`                                     | Apply a note event (velocity already 0..1) and recompute the control graph                                                                   |
+| `pd_process(st, in_l, in_r, out_l, out_r, nframes)`                                                        | Renders `nframes` of audio (and fires `loadbang` on the first call)                                                                          |
+| `pd_note_on(st, key, velocity01)` / `pd_note_off(st, key, velocity01)`                                     | Push a note event (velocity already 0..1) into `notein`'s outlets, right to left as PD fires them                                            |
 | `pd_control_change(st, controller, value)`                                                                 | MIDI CC — drives any `ctlin` objects (`controller`/`value` 0..127)                                                                           |
 | `pd_pitch_bend(st, value)`                                                                                 | Pitch bend — drives any `bendin` objects (0..16383, 8192 == center)                                                                          |
 | `pd_touch(st, value)`                                                                                      | Channel pressure — drives any `touchin` objects (0..127)                                                                                     |
@@ -47,7 +47,7 @@ clang --target=wasm32-wasi -mexec-model=reactor \
 
 The MIDI CC/bend/touch/program functions are always safe to call (no-op if the patch has no matching object) — no host is required to call them, and poketrack's own host (see `plugins/pd2wclap` in the poketrack repo) currently doesn't, since it never forwards raw MIDI CC/bend/touch/program-change events to CLAP plugins in the first place. They exist for hosts that do.
 
-A host is expected to split a process block at each event's sample-accurate time offset — call `pd_process()` for the frames up to an event, then `pd_note_on`/`pd_note_off`/`pd_set_param`, then continue — rather than applying all of a block's events up front. `pd_process()` also recomputes the control graph once at the start of every call (in addition to the per-event recomputes above), so time-driven objects (`line~`, delay lines, envelopes) and any pure-control chain downstream of them keep updating even in a block with no events — control-rate updates are quantized to block size, same as most real-time plugin formats.
+A host is expected to split a process block at each event's sample-accurate time offset — call `pd_process()` for the frames up to an event, then `pd_note_on`/`pd_note_off`/`pd_set_param`, then continue — rather than applying all of a block's events up front. The control graph is message-driven: it reacts when one of those entry points pushes a message, and when a sample-accurate scheduler object (`metro`/`delay`/`pipe`/`timer`) fires from inside the audio loop. Nothing is recomputed per block, so a block with no events costs nothing on the control side.
 
 ## What becomes a param
 
@@ -95,50 +95,26 @@ a held note doesn't steal a second voice), or — once every voice is busy —
 either steals whichever voice has been held longest (`steal` nonzero) or
 silently drops the extra note (`steal` 0 or omitted, the default).
 
-**This does not use PD's real `poly` contract.** Real PD/Max `poly` emits a
-single `(voice#, pitch, velocity)` triple meant to be fanned out downstream
-with `[route 1 2 3 ...]` — but this codegen has no list-typed outlets for
-`route` to dispatch through (see the symbol/list-typed routing gap above),
-so that idiom can't be reproduced. Instead **every voice gets its own
-permanently-assigned, continuously-held outlet triple**: for voice `i`
-(0-based), outlet `3*i` = pitch, `3*i+1` = gate (1.0 while held, 0.0 while
-free), `3*i+2` = velocity. Wire outlet triple `i` straight into instance `i`
-of your voice abstraction (an inline sub-patch or a separate `voice.pd`
-loaded via `pd2ast`'s abstraction search path — both flatten identically,
-see "Full pipeline" above) — no `route`, no dispatch logic needed in the
-patch at all. `poly 4 1` therefore has 12 outlets; wire up 4 copies of your
-voice patch.
+`poly` follows **PD's real contract**: three outlets — voice number, pitch,
+velocity — fired right to left, dispatched downstream the standard way with
+`[pack f f f]` → `[route 1 2 3 ... N]` into N copies of a voice abstraction.
+That idiom works here because the control graph is genuinely message-driven:
+`route` fires exactly one outlet, so every *other* voice keeps the pitch and
+velocity it last latched instead of being re-evaluated against the new note
+and cut off. Patches written this way are ordinary PD patches — they run
+unmodified in PD itself.
 
 Verified by compiling generated code and driving it through a real note
 sequence: round-robin assignment across free voices, retriggering an
 already-held pitch reuses its voice instead of stealing a second one,
-`steal 1` correctly steals the *oldest*-held voice when full, and a
-note-off correctly finds and releases the right voice even after it was
-reassigned by a steal.
+`steal 1` correctly steals the *oldest*-held voice when full, a note-off
+correctly finds and releases the right voice even after it was reassigned by
+a steal, and two simultaneously-held notes really do sound together.
 
-**You can still write the standard `poly` → `[pack f f f]` → `[route 1 2 3 ...]`
-idiom if you want the patch to also work unmodified in real PD.** The
-codegen recognizes that exact shape — a `route` whose targets are `1..N`
-consecutively, fed (directly or through one `pack` hop) from outlet 0 of a
-`poly` node whose voice count matches `N` — and compiles it straight
-through `poly`'s own per-voice outlets above, bypassing `route`/`pack`'s
-literal semantics entirely (a `warning:` on stderr confirms the rewrite
-fired). This isn't optional polish: `route`'s literal semantics are
-architecturally impossible to honor correctly here regardless of how
-`pack`/`route` are implemented, since real PD's version depends on a
-discrete message *latching* at the receiving object until the next message
-arrives on that specific wire — a concept this continuously-recomputed
-control graph has no equivalent of. With only one shared `poly` output
-feeding a live `route`, the instant a second voice fires, every other
-voice's `route` row re-evaluates against the new key and drops to zero,
-cutting it off — not a bug to fix downstream, an inherent consequence of
-"every control node is a stateless formula over current inputs," which
-this whole codegen is built on (see the module doc in `wclap_gen.rs`).
-`pack`/`route` still get emitted as harmless dead code alongside the
-rewrite; only the target-count mismatch case (or any other route/pack
-shape) falls through to their literal, single-connection-wins behavior.
-
-Message boxes (`[1 10(`-style) are also **not reactive**: a message box compiles to a fixed constant taken from its literal contents at build time, not a value that's re-emitted when something bangs it — wiring two different message boxes into the same downstream inlet (a common attack/release idiom: `[sel 0] -> [1 10(` / `[0 200(` -> one `vline~` inlet) silently keeps only the first-declared one and drops the other, since `input_expr` resolution only honors one incoming connection per inlet. Drive dynamic targets through control-math objects (comparisons, `moses`, `spigot`, `f`) instead of through message boxes.
+Message boxes behave as they do in PD: any message arriving at a box's inlet
+makes it emit its own literal contents (as a list, if it has several atoms).
+Two message boxes may therefore share one downstream inlet — the classic
+`[sel 0]` → `[1 10(` / `[0 200(` → one `vline~` attack/release pair works.
 
 ### `metro`/`delay`/`pipe`/`timer`: real, sample-accurate scheduling
 
@@ -149,19 +125,25 @@ These aren't tilde objects, but their timing math runs every sample (forced into
 - `pipe` (re)arms whenever inlet 0's value _changes_, and forwards that value (not just a bang) once the delay elapses.
 - `timer` continuously reports elapsed ms since inlet 0's last rising edge, rather than only on a second bang.
 
-### Discrete message/bang semantics: what's approximated
+### What's still approximated
 
-pdast2wclap's control graph is _continuous_ — every control node's value is recomputed on each event/block, not driven by discrete one-shot messages. This is a better fit for most of vanilla PD than pdast2faust's per-sample recompute (see below), but a few real objects are fundamentally message/bang-driven and only get an honest approximation here:
+The control graph is real message passing (see "Built-in object coverage"
+above), so `route`, `select`, `trigger`, `change`, `random`, `f`/`float` cold
+inlets, message boxes and list distribution all behave as they do in PD. What
+remains approximate:
 
-| PD object        | Here                                             | What's lost                                                                                 |
-| ---------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `change`         | Always mirrors input                             | Real `change` only outputs when the value differs                                           |
-| `snapshot~`      | Continuously mirrors the signal's current sample | Real `snapshot~` captures only on a bang                                                    |
-| `threshold~`     | Continuous 0/1 gate                              | Real `threshold~` bangs once on crossing                                                    |
-| `tabwrite~`      | Continuous circular recording                    | Real `tabwrite~` is a bang-armed one-shot recording                                         |
-| `random`         | Regenerated every recompute                      | Real `random` only regenerates on a bang                                                    |
-| `line` / `line~` / `vline~` | Exponential ramp toward the input, fixed time | Real `line`/`vline~` take a `(target, time[, delay])` message pair per ramp — no per-call time override, and `vline~`'s multi-segment/delay syntax isn't modeled at all |
-| `loadbang`       | Fires once on the first control recompute        | Matches real PD closely — the only difference is the exact recompute that counts as "load"  |
+| PD object    | Here                                             | What's lost                                                          |
+| ------------ | ------------------------------------------------ | -------------------------------------------------------------------- |
+| `snapshot~`  | Continuously mirrors the signal's current sample | Real `snapshot~` captures only on a bang                             |
+| `env~`       | Continuous one-pole RMS follower                 | Real `env~` reports once per analysis window                         |
+| `tabwrite~`  | Continuous circular recording                    | Real `tabwrite~` is a bang-armed one-shot                            |
+| `line`/`line~`/`vline~` | Ramp toward the target over a creation-arg time | No per-message time override; `vline~`'s multi-segment/delay syntax isn't modeled |
+
+Messages carry numbers only — there is no symbol atom, so a symbol degrades
+to `0.0`. A message carries at most `PD_MSG_MAX` (8) atoms. Control recursion
+is bounded by `PD_MAX_DEPTH` (64); PD itself raises a stack-overflow error at
+a comparable point, so a runaway control feedback loop stops rather than
+crashing.
 
 ## Fixes vs. `pdast2faust`
 

@@ -60,17 +60,19 @@ Any `[receive NAME]` / `[r NAME]` / `[value NAME]` object with no matching `[sen
 | Oscillators         | `osc~`, `phasor~`, `noise~`, `sig~`, `tabosc4~` (linearly interpolated)                                                                                                |
 | Audio math          | `+~` `-~` `*~` `/~`, `abs~`, `sqrt~`, `wrap~`, `clip~`                                                                                                                 |
 | Filters             | `lop~`, `hip~`, `bp~`, `vcf~`, `biquad~` (constant coefficients), `rzero~`, `rpole~`                                                                                   |
-| Envelope / dynamics | `line~`, `env~`, `samphold~`, `snapshot~`, `threshold~`                                                                                                                |
+| Envelope / dynamics | `line~`, `vline~`, `env~`, `samphold~`, `snapshot~`, `threshold~`                                                                                                      |
 | Delay lines         | `delwrite~`, `delread~`, `vd~` (shared circular buffer, keyed by name)                                                                                                 |
 | Arrays / tables     | `tabread~`, `tabread`, `tabwrite~`, and the array data itself (seeded from the saved patch)                                                                            |
 | Audio I/O           | `dac~`, `adc~`                                                                                                                                                         |
 | MIDI                | `notein`, `ctlin`, `bendin`, `touchin`, `pgmin` (real events, not UI-metadata)                                                                                         |
 | Scheduler           | `metro`, `delay`/`del`, `pipe`, `timer` — sample-accurate, see below                                                                                                   |
 | Control math        | `+ - * / max min mod pow`, `sin cos atan atan2 abs sqrt log exp wrap clip int`, comparisons (`> < >= <= == != && \|\| !`), `mtof ftom dbtorms rmstodb dbtopow powtodb` |
-| Routing             | `moses`, `spigot`, `sel`/`select`, `route`, `change`, `pack`, `unpack`, `trigger`/`t`, `line`, `random`                                                                |
-| Buses               | `send` / `s`, `receive` / `r`, `value`                                                                                                                                 |
+| Routing             | `moses`, `spigot`, `sel`/`select`, `route`, `change`, `pack`, `unpack`, `swap`, `trigger`/`t`, `line`, `random`, `f`/`float`, `loadbang` (fires once on load)          |
+| Buses               | `send` / `s`, `receive` / `r`, `value` (control-rate), `send~` / `receive~`, `throw~` / `catch~` (signal-rate, own namespace)                                          |
 
 Anything else compiles to a harmless zero stub with a `warning:` on stderr rather than failing — the per-object codegen (`wclap_gen.rs`) is built to grow this list. Not yet implemented: `expr`/`expr~`, `cpole~`/`czero~`, multi-message boxes, and symbol/list-typed routing.
+
+Message boxes (`[1 10(`-style) are also **not reactive**: a message box compiles to a fixed constant taken from its literal contents at build time, not a value that's re-emitted when something bangs it — wiring two different message boxes into the same downstream inlet (a common attack/release idiom: `[sel 0] -> [1 10(` / `[0 200(` -> one `vline~` inlet) silently keeps only the first-declared one and drops the other, since `input_expr` resolution only honors one incoming connection per inlet. Drive dynamic targets through control-math objects (comparisons, `moses`, `spigot`, `f`) instead of through message boxes.
 
 ### `metro`/`delay`/`pipe`/`timer`: real, sample-accurate scheduling
 
@@ -92,7 +94,8 @@ pdast2wclap's control graph is _continuous_ — every control node's value is re
 | `threshold~`     | Continuous 0/1 gate                              | Real `threshold~` bangs once on crossing                                                    |
 | `tabwrite~`      | Continuous circular recording                    | Real `tabwrite~` is a bang-armed one-shot recording                                         |
 | `random`         | Regenerated every recompute                      | Real `random` only regenerates on a bang                                                    |
-| `line` / `line~` | Exponential ramp toward the input, fixed time    | Real `line` takes a `(target, time)` message pair per ramp — no per-call time override here |
+| `line` / `line~` / `vline~` | Exponential ramp toward the input, fixed time | Real `line`/`vline~` take a `(target, time[, delay])` message pair per ramp — no per-call time override, and `vline~`'s multi-segment/delay syntax isn't modeled at all |
+| `loadbang`       | Fires once on the first control recompute        | Matches real PD closely — the only difference is the exact recompute that counts as "load"  |
 
 ## Fixes vs. `pdast2faust`
 

@@ -194,9 +194,9 @@ fn domain_of(name: &str) -> Domain {
 fn outlet_count(node: &Node) -> usize {
     match &node.kind {
         NodeKind::Obj { name, args } => match name.as_str() {
-            "dac~" | "send" | "s" | "print" | "delwrite~" => 0,
+            "dac~" | "send" | "s" | "print" | "delwrite~" | "send~" | "throw~" => 0,
             "notein" => 3,
-            "vcf~" | "moses" => 2,
+            "vcf~" | "moses" | "swap" => 2,
             "ctlin" => {
                 if args.first().is_some_and(|t| matches!(t, Token::Float(_))) {
                     1
@@ -298,6 +298,51 @@ fn collect_bus_map(nodes: &[Node]) -> BTreeMap<String, BusEntry> {
         match name.as_str() {
             "send" | "s" => entry.senders.push(node.id),
             "receive" | "r" | "value" => entry.receivers.push(node.id),
+            _ => {}
+        }
+    }
+    map
+}
+
+/// Signal-rate `send~`/`receive~` bus: a completely separate namespace from
+/// `collect_bus_map`'s control-rate `send`/`receive`/`value` (same as real
+/// PD — `[send~ foo]` and `[send foo]` never alias each other), so it's kept
+/// in its own map rather than sharing keys.
+fn collect_signal_bus_map(nodes: &[Node]) -> BTreeMap<String, BusEntry> {
+    let mut map: BTreeMap<String, BusEntry> = BTreeMap::new();
+    for node in nodes {
+        let NodeKind::Obj { name, args } = &node.kind else {
+            continue;
+        };
+        let Some(bname) = bus_name(args) else {
+            continue;
+        };
+        let entry = map.entry(bname).or_default();
+        match name.as_str() {
+            "send~" => entry.senders.push(node.id),
+            "receive~" => entry.receivers.push(node.id),
+            _ => {}
+        }
+    }
+    map
+}
+
+/// `throw~`/`catch~` submix bus: like `collect_signal_bus_map` but every
+/// `throw~` sharing a name is meant to be *summed* by the matching `catch~`
+/// (PD's audio submix bus), not just mirrored from a single sender.
+fn collect_throw_bus_map(nodes: &[Node]) -> BTreeMap<String, BusEntry> {
+    let mut map: BTreeMap<String, BusEntry> = BTreeMap::new();
+    for node in nodes {
+        let NodeKind::Obj { name, args } = &node.kind else {
+            continue;
+        };
+        let Some(bname) = bus_name(args) else {
+            continue;
+        };
+        let entry = map.entry(bname).or_default();
+        match name.as_str() {
+            "throw~" => entry.senders.push(node.id),
+            "catch~" => entry.receivers.push(node.id),
             _ => {}
         }
     }
@@ -502,6 +547,8 @@ impl WclapGenerator {
         let node_by_id: HashMap<u32, &Node> = active.iter().map(|n| (n.id, *n)).collect();
 
         let bus_map = collect_bus_map(&nodes);
+        let signal_bus_map = collect_signal_bus_map(&nodes);
+        let throw_bus_map = collect_throw_bus_map(&nodes);
         let params = collect_params(&nodes);
 
         let order = topo_order(&active_ids, &connections);
@@ -599,6 +646,8 @@ impl WclapGenerator {
                 &incoming,
                 &node_outlets,
                 &bus_map,
+                &signal_bus_map,
+                &throw_bus_map,
                 &delay_lines,
                 &arrays,
                 &mut dac_l,
@@ -640,6 +689,8 @@ impl WclapGenerator {
         incoming: &[&Connection],
         node_outlets: &HashMap<u32, usize>,
         bus_map: &BTreeMap<String, BusEntry>,
+        signal_bus_map: &BTreeMap<String, BusEntry>,
+        throw_bus_map: &BTreeMap<String, BusEntry>,
         delay_lines: &BTreeMap<String, f64>,
         arrays: &BTreeMap<String, ArrayInfo>,
         dac_l: &mut Vec<String>,
@@ -710,6 +761,8 @@ impl WclapGenerator {
                 id,
                 node_outlets,
                 bus_map,
+                signal_bus_map,
+                throw_bus_map,
                 delay_lines,
                 arrays,
                 &input_expr,
@@ -735,6 +788,8 @@ impl WclapGenerator {
         id: u32,
         _node_outlets: &HashMap<u32, usize>,
         bus_map: &BTreeMap<String, BusEntry>,
+        signal_bus_map: &BTreeMap<String, BusEntry>,
+        throw_bus_map: &BTreeMap<String, BusEntry>,
         delay_lines: &BTreeMap<String, f64>,
         arrays: &BTreeMap<String, ArrayInfo>,
         input_expr: &dyn Fn(u32, &str) -> String,
@@ -803,6 +858,87 @@ impl WclapGenerator {
                     state_fields: format!("  double {f};\n"),
                     init: format!("  st->{f} = 0.0;\n"),
                     compute: String::new(),
+                }
+            }
+
+            // ── send~ / receive~ (signal-rate bus — own namespace, never
+            //    aliases a same-named control send/receive/value) ──────────
+            "send~" => {
+                let has_receiver = bus_name(args)
+                    .and_then(|b| signal_bus_map.get(&b))
+                    .is_some_and(|e| !e.receivers.is_empty());
+                let in0 = input_expr(0, "0.0");
+                let compute = if has_receiver {
+                    format!("  st->{f} = {in0};\n")
+                } else {
+                    String::new() // dropped: no receiver, true sink
+                };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute,
+                }
+            }
+            "receive~" => {
+                let Some(bname) = bus_name(args) else {
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: String::new(),
+                        init: String::new(),
+                        compute: String::new(),
+                    };
+                };
+                let sender = signal_bus_map.get(&bname).and_then(|e| e.senders.first());
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: match sender {
+                        Some(&s) => format!("  st->{f} = st->{};\n", field(s)),
+                        None => String::new(), // no matching send~: silent
+                    },
+                }
+            }
+
+            // ── throw~ / catch~ (signal-rate submix bus: every throw~
+            //    sharing a name is summed by the matching catch~) ──────────
+            "throw~" => {
+                let in0 = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!("  st->{f} = {in0};\n"),
+                }
+            }
+            "catch~" => {
+                let Some(bname) = bus_name(args) else {
+                    return EmittedNode {
+                        domain: Domain::Signal,
+                        state_fields: format!("  double {f};\n"),
+                        init: format!("  st->{f} = 0.0;\n"),
+                        compute: String::new(),
+                    };
+                };
+                let throwers: Vec<u32> = throw_bus_map
+                    .get(&bname)
+                    .map(|e| e.senders.clone())
+                    .unwrap_or_default();
+                let sum = if throwers.is_empty() {
+                    "0.0".to_string()
+                } else {
+                    throwers
+                        .iter()
+                        .map(|&t| format!("st->{}", field(t)))
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                };
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!("  st->{f} = {sum};\n"),
                 }
             }
 
@@ -902,6 +1038,15 @@ impl WclapGenerator {
             "int" | "i" => {
                 let a = input_expr(0, "0.0");
                 simple_control(id, &format!("(double)(int64_t)({a})"))
+            }
+            // Bare float box: mirrors whichever inlet is connected (inlet 0
+            // preferred, matching PD's hot-inlet convention), falling back to
+            // the creation-arg default. No real hot/cold-inlet distinction —
+            // consistent with the rest of this continuous control model.
+            "f" | "float" => {
+                let default = format!("{}", if args.is_empty() { 0.0 } else { farg(0) });
+                let a = input_expr(0, &input_expr(1, &default));
+                simple_control(id, &a)
             }
 
             // ── comparisons / logic ─────────────────────────────────────────
@@ -1181,6 +1326,34 @@ impl WclapGenerator {
                     state_fields,
                     init,
                     compute,
+                }
+            }
+            "swap" => {
+                let default_a = format!("{}", if args.is_empty() { 0.0 } else { farg(0) });
+                let default_b = format!("{}", if args.len() < 2 { 0.0 } else { farg(1) });
+                let a = input_expr(0, &default_a);
+                let b = input_expr(1, &default_b);
+                let o0 = field(id);
+                let o1 = field_o(id, 1);
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields: format!("  double {o0};\n  double {o1};\n"),
+                    init: format!("  st->{o0} = 0.0; st->{o1} = 0.0;\n"),
+                    compute: format!("  st->{o0} = {b};\n  st->{o1} = {a};\n"),
+                }
+            }
+            // Fires exactly once (the first control recompute after
+            // pd_create — see pd_process/pd_note_on) then stays 0 forever,
+            // approximating PD's load-time bang.
+            "loadbang" => {
+                let fired = format!("{f}_fired");
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields: format!("  double {f};\n  double {fired};\n"),
+                    init: format!("  st->{f} = 0.0; st->{fired} = 0.0;\n"),
+                    compute: format!(
+                        "  if (st->{fired} == 0.0) {{ st->{f} = 1.0; st->{fired} = 1.0; }} else {{ st->{f} = 0.0; }}\n"
+                    ),
                 }
             }
 
@@ -1510,11 +1683,14 @@ impl WclapGenerator {
             // ── envelope / sample-hold — snapshot~ and samphold~ read a
             //    signal input directly (whatever pd_signal_step last wrote
             //    to that field), so they work from either domain. ─────────
-            "line~" => {
+            "line~" | "vline~" => {
                 // Continuous one-pole ramp toward inlet 0's value over a
                 // creation-arg ramp time (ms) — an honest approximation of
                 // PD's target/time message pair (see README): not a
-                // discrete-message-triggered multi-segment ramp.
+                // discrete-message-triggered multi-segment ramp. vline~'s
+                // extra delay-before-ramp-starts message field isn't
+                // representable here either, so it's treated identically
+                // to line~.
                 let target = input_expr(0, "0.0");
                 let ramp_ms = if args.is_empty() { 20.0 } else { farg(0) };
                 EmittedNode {

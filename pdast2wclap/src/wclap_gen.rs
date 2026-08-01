@@ -173,6 +173,197 @@ impl FlattenerWithBoundaries {
     }
 }
 
+// ── poly → (pack) → route(1..N) voice-dispatch idiom rewrite ───────────────
+//
+// Real PD's `poly` emits a single (voice#, pitch, velocity) triple as one
+// discrete message, meant to be fanned to N voice objects with
+// `[pack f f f]` → `[route 1 2 ... N]`. That idiom is unrepresentable here:
+// this codegen's control graph has no discrete messages at all — every
+// control node is a stateless formula recomputed from *current* inputs on
+// every note event and once per audio block, not "the last message this
+// wire delivered." With only one shared poly output, the instant a new
+// voice is triggered, `route`'s row for every other, still-held voice
+// re-evaluates against the new key and drops to zero — silencing them
+// immediately, which isn't a codegen bug, it's what "no per-wire memory"
+// necessarily means for a message-shaped idiom.
+//
+// So rather than implement `route`'s literal (here, impossible) semantics
+// for this specific shape, detect it and compile straight through `poly`'s
+// own already-correct, continuously-valid per-voice (pitch, gate, velocity)
+// outlets instead — bypassing `route`/`pack` for the dispatch entirely.
+// The source patch is untouched (`pack`/`route` still get emitted, just as
+// harmless dead code) and still opens/plays correctly in real PD.
+fn node_obj<'a>(nodes: &'a [Node], id: u32) -> Option<(&'a str, &'a [Token])> {
+    nodes.iter().find(|n| n.id == id).and_then(|n| match &n.kind {
+        NodeKind::Obj { name, args } => Some((name.as_str(), args.as_slice())),
+        _ => None,
+    })
+}
+
+fn farg_at(args: &[Token], i: usize, default: f64) -> f64 {
+    args.get(i)
+        .and_then(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+        .unwrap_or(default)
+}
+
+/// If `route_id`'s inlet 0 is fed (directly, or through exactly one `pack`
+/// hop) from outlet 0 of a `poly` node, returns that poly node's id and
+/// voice count.
+fn trace_poly_source(nodes: &[Node], connections: &[Connection], route_id: u32) -> Option<(u32, usize)> {
+    let feed = connections
+        .iter()
+        .find(|c| c.dst_node == route_id && c.dst_inlet == 0)?;
+    let (src_name, _) = node_obj(nodes, feed.src_node)?;
+
+    let (poly_id, poly_outlet) = if src_name == "poly" {
+        (feed.src_node, feed.src_outlet)
+    } else if feed.src_outlet == 0 {
+        // One passthrough hop (e.g. `pack`) is allowed — follow its own inlet 0.
+        let inner = connections
+            .iter()
+            .find(|c| c.dst_node == feed.src_node && c.dst_inlet == 0)?;
+        let (inner_name, _) = node_obj(nodes, inner.src_node)?;
+        if inner_name != "poly" {
+            return None;
+        }
+        (inner.src_node, inner.src_outlet)
+    } else {
+        return None;
+    };
+    if poly_outlet != 0 {
+        return None;
+    }
+    let (_, poly_args) = node_obj(nodes, poly_id)?;
+    let n_voices = farg_at(poly_args, 0, 16.0).max(1.0) as usize;
+    Some((poly_id, n_voices))
+}
+
+/// Real PD lets you send a `[pack f f(`-built list straight into a single
+/// "hot" inlet and have the receiver treat it as filling that inlet plus
+/// the following ones (e.g. `poly`'s left inlet commonly receives a
+/// `pitch velocity` pair this way, not two separately-wired connections).
+/// `pack` here has no real list output to make that work implicitly — but
+/// since it already keeps every input on its own mirrored outlet, if some
+/// node's inlet 0 is fed from `pack`'s outlet 0 and its inlet 1 is
+/// otherwise unconnected, wire `pack`'s outlet 1 (its own inlet 1,
+/// mirrored) straight into that inlet 1 too. Only fills in genuinely
+/// unconnected inlets — never overrides an explicit connection.
+fn fill_unconnected_inlets_from_pack_fanout(nodes: &[Node], connections: &mut Vec<Connection>) {
+    let feeds_from_pack0: Vec<(u32, u32)> = connections
+        .iter()
+        .filter(|c| c.dst_inlet == 0 && c.src_outlet == 0)
+        .filter_map(|c| {
+            let (name, args) = node_obj(nodes, c.src_node)?;
+            (name == "pack" && args.len() > 1).then_some((c.dst_node, c.src_node))
+        })
+        .collect();
+
+    let mut to_add = Vec::new();
+    for (dst_node, pack_id) in feeds_from_pack0 {
+        let (_, pack_args) = node_obj(nodes, pack_id).unwrap();
+        for inlet in 1..pack_args.len() as u32 {
+            let already_connected = connections
+                .iter()
+                .any(|c| c.dst_node == dst_node && c.dst_inlet == inlet);
+            if !already_connected {
+                to_add.push(Connection {
+                    src_node: pack_id,
+                    src_outlet: inlet,
+                    dst_node,
+                    dst_inlet: inlet,
+                });
+            }
+        }
+    }
+    connections.extend(to_add);
+}
+
+fn rewrite_poly_route_dispatch(nodes: &mut Vec<Node>, connections: &mut Vec<Connection>, warnings: &mut Vec<String>) {
+    fill_unconnected_inlets_from_pack_fanout(nodes, connections);
+
+    let mut next_id = nodes.iter().map(|n| n.id).max().map(|m| m + 1).unwrap_or(0);
+
+    let route_ids: Vec<u32> = nodes
+        .iter()
+        .filter_map(|n| match &n.kind {
+            NodeKind::Obj { name, args } if name == "route" => {
+                let targets: Vec<f64> = args
+                    .iter()
+                    .filter_map(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+                    .collect();
+                let is_voice_dispatch = !targets.is_empty()
+                    && targets
+                        .iter()
+                        .enumerate()
+                        .all(|(i, &t)| t == (i + 1) as f64);
+                is_voice_dispatch.then_some(n.id)
+            }
+            _ => None,
+        })
+        .collect();
+
+    for route_id in route_ids {
+        let Some((poly_id, n_voices)) = trace_poly_source(nodes, connections, route_id) else {
+            continue;
+        };
+        let (_, route_args) = node_obj(nodes, route_id).unwrap();
+        let n_targets = route_args
+            .iter()
+            .filter(|t| matches!(t, Token::Float(_)))
+            .count();
+        if n_targets != n_voices {
+            continue; // target count doesn't match poly's voice count — don't guess
+        }
+
+        let mut rewired = 0;
+        for voice in 0..n_voices {
+            let outbound: Vec<Connection> = connections
+                .iter()
+                .filter(|c| c.src_node == route_id && c.src_outlet == voice as u32)
+                .cloned()
+                .collect();
+            for c in outbound {
+                connections.retain(|x| *x != c);
+                let spigot_id = next_id;
+                next_id += 1;
+                nodes.push(Node {
+                    id: spigot_id,
+                    x: 0,
+                    y: 0,
+                    kind: NodeKind::Obj {
+                        name: "spigot".into(),
+                        args: vec![],
+                    },
+                });
+                connections.push(Connection {
+                    src_node: poly_id,
+                    src_outlet: (voice * 3) as u32,
+                    dst_node: spigot_id,
+                    dst_inlet: 0,
+                });
+                connections.push(Connection {
+                    src_node: poly_id,
+                    src_outlet: (voice * 3 + 1) as u32,
+                    dst_node: spigot_id,
+                    dst_inlet: 1,
+                });
+                connections.push(Connection {
+                    src_node: spigot_id,
+                    src_outlet: 0,
+                    dst_node: c.dst_node,
+                    dst_inlet: c.dst_inlet,
+                });
+                rewired += 1;
+            }
+        }
+        if rewired > 0 {
+            warnings.push(format!(
+                "poly {poly_id} → route {route_id} voice-dispatch pattern detected: compiled directly through poly's per-voice outlets instead of route/pack's literal (here, message-less) semantics — see pdast2wclap README"
+            ));
+        }
+    }
+}
+
 // ── Object classification ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,7 +736,8 @@ impl WclapGenerator {
 
     pub fn generate(&mut self, canvas: &Canvas) -> String {
         self.declared_delay_lines.clear();
-        let (nodes, connections) = flatten_patch(canvas);
+        let (mut nodes, mut connections) = flatten_patch(canvas);
+        rewrite_poly_route_dispatch(&mut nodes, &mut connections, &mut self.warnings);
 
         let active: Vec<&Node> = nodes
             .iter()
@@ -2796,6 +2988,73 @@ mod tests {
         assert!(
             !c.contains("(st->n0 + st->n0"),
             "single-connection inlet shouldn't grow a spurious sum: {c}"
+        );
+    }
+
+    // Regression test for the poly/pack/route voice-dispatch rewrite: a
+    // patch built the standard real-PD way (poly -> pack f f f -> route
+    // 1 2 -> two separate consumers) must compile through poly's own
+    // per-voice outlets, not route's literal (here, message-less and thus
+    // broken) semantics — confirmed by checking the generated C reads a
+    // spigot gated by poly's own pitch/gate fields, not route's output.
+    #[test]
+    fn poly_pack_route_voice_dispatch_is_rewritten_through_poly_outlets() {
+        let src = "#N canvas 0 50 450 300 12;\r\n\
+                    #X obj 20 20 notein;\r\n\
+                    #X obj 20 60 poly 2 1;\r\n\
+                    #X obj 20 100 pack f f f;\r\n\
+                    #X obj 20 140 route 1 2;\r\n\
+                    #X obj 20 180 * 1;\r\n\
+                    #X obj 20 220 * 1;\r\n\
+                    #X connect 0 0 1 0;\r\n\
+                    #X connect 0 1 1 1;\r\n\
+                    #X connect 1 0 2 0;\r\n\
+                    #X connect 1 1 2 1;\r\n\
+                    #X connect 1 2 2 2;\r\n\
+                    #X connect 2 0 3 0;\r\n\
+                    #X connect 3 0 4 0;\r\n\
+                    #X connect 3 1 5 0;\r\n";
+        let (c, warn) = generate_c(src);
+        assert!(
+            warn.iter().any(|w| w.contains("voice-dispatch pattern detected")),
+            "expected a rewrite warning: {warn:?}"
+        );
+        // Neither consumer should read route's own output field (n3 / n3_o1).
+        assert!(!c.contains("= st->n3;") && !c.contains("= st->n3_o1;"), "{c}");
+        // Both should read a spigot gated by poly's (id 1) own pitch/gate
+        // outlets: voice 0 = outlets 0/1, voice 1 = outlets 3/4.
+        assert!(
+            c.contains("(st->n1_o1) != 0.0 ? (st->n1) :") || c.contains("(st->n1_o1) != 0.0 ? (st->n1) : 0.0"),
+            "voice 0 consumer isn't gated by poly's own outlet 0/1: {c}"
+        );
+        assert!(
+            c.contains("(st->n1_o4) != 0.0 ? (st->n1_o3) :"),
+            "voice 1 consumer isn't gated by poly's own outlet 3/4: {c}"
+        );
+    }
+
+    // Regression test for a real bug: `[notein] -> [pack f f] -> [poly]`
+    // (wiring pack's single outlet 0 into poly's inlet 0 only, real-PD
+    // style, relying on the "list into a hot inlet" idiom) only ever
+    // carried pitch through — poly's velocity inlet stayed permanently
+    // unconnected, so poly always read velocity as 0.0 and treated every
+    // note as a note-off, never assigning a voice. `pack` mirrors every
+    // input on its own same-indexed outlet already; this just needs poly's
+    // otherwise-unconnected inlet 1 auto-filled from pack's outlet 1.
+    #[test]
+    fn pack_fanout_fills_polys_unconnected_velocity_inlet() {
+        let src = "#N canvas 0 50 450 300 12;\r\n\
+                    #X obj 20 20 notein;\r\n\
+                    #X obj 20 60 pack f f;\r\n\
+                    #X obj 20 100 poly 2 1;\r\n\
+                    #X connect 0 0 1 0;\r\n\
+                    #X connect 0 1 1 1;\r\n\
+                    #X connect 1 0 2 0;\r\n";
+        let (c, warn) = generate_c(src);
+        assert!(warn.is_empty(), "unexpected warnings: {warn:?}");
+        assert!(
+            c.contains("double _vel = st->n1_o1;"),
+            "poly's velocity must read pack's mirrored outlet 1, not a 0.0 literal: {c}"
         );
     }
 }

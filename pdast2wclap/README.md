@@ -81,7 +81,13 @@ multi-note polyphony assembled by hand from PD abstractions — the CLAP-level
 (matching how a real MIDI note-on/off arrives), and `poly` fans that one
 stream out across N voice slots inside the generated C.
 
-Wire `notein`'s pitch/velocity outlets into `poly`'s two inlets. On every
+Wire `notein`'s pitch/velocity outlets into `poly`'s two inlets — either as
+two separate connections, or the common real-PD shorthand of packing them
+first (`[notein] -> [pack f f] -> [poly]`, one wire into `poly`'s inlet 0):
+`pack` mirrors every input on its own same-indexed outlet, and when some
+node's inlet 0 is fed from a `pack`'s outlet 0 with its inlet 1 otherwise
+unconnected, that inlet 1 is auto-filled from the pack's outlet 1 (not
+special-cased to `poly` — this applies to any node fed that way). On every
 genuine note event (edge-detected the same way `change` is — see below —
 so a steady held note doesn't re-trigger every block) it either assigns a
 free voice, reuses the voice already holding that exact pitch (retriggering
@@ -109,6 +115,28 @@ already-held pitch reuses its voice instead of stealing a second one,
 `steal 1` correctly steals the *oldest*-held voice when full, and a
 note-off correctly finds and releases the right voice even after it was
 reassigned by a steal.
+
+**You can still write the standard `poly` → `[pack f f f]` → `[route 1 2 3 ...]`
+idiom if you want the patch to also work unmodified in real PD.** The
+codegen recognizes that exact shape — a `route` whose targets are `1..N`
+consecutively, fed (directly or through one `pack` hop) from outlet 0 of a
+`poly` node whose voice count matches `N` — and compiles it straight
+through `poly`'s own per-voice outlets above, bypassing `route`/`pack`'s
+literal semantics entirely (a `warning:` on stderr confirms the rewrite
+fired). This isn't optional polish: `route`'s literal semantics are
+architecturally impossible to honor correctly here regardless of how
+`pack`/`route` are implemented, since real PD's version depends on a
+discrete message *latching* at the receiving object until the next message
+arrives on that specific wire — a concept this continuously-recomputed
+control graph has no equivalent of. With only one shared `poly` output
+feeding a live `route`, the instant a second voice fires, every other
+voice's `route` row re-evaluates against the new key and drops to zero,
+cutting it off — not a bug to fix downstream, an inherent consequence of
+"every control node is a stateless formula over current inputs," which
+this whole codegen is built on (see the module doc in `wclap_gen.rs`).
+`pack`/`route` still get emitted as harmless dead code alongside the
+rewrite; only the target-count mismatch case (or any other route/pack
+shape) falls through to their literal, single-connection-wins behavior.
 
 Message boxes (`[1 10(`-style) are also **not reactive**: a message box compiles to a fixed constant taken from its literal contents at build time, not a value that's re-emitted when something bangs it — wiring two different message boxes into the same downstream inlet (a common attack/release idiom: `[sel 0] -> [1 10(` / `[0 200(` -> one `vline~` inlet) silently keeps only the first-declared one and drops the other, since `input_expr` resolution only honors one incoming connection per inlet. Drive dynamic targets through control-math objects (comparisons, `moses`, `spigot`, `f`) instead of through message boxes.
 

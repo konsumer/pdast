@@ -72,11 +72,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }} --package ast2pd --package pd2ast --package pdast2faust
+        run: cross build --release --target ${{ matrix.target }} --package ast2pd --package pd2ast --package pdast2faust --package pdast2wclap
 
       - name: Build (cargo)
         if: '!matrix.use_cross'
-        run: cargo build --release --target ${{ matrix.target }} --package ast2pd --package pd2ast --package pdast2faust
+        run: cargo build --release --target ${{ matrix.target }} --package ast2pd --package pd2ast --package pdast2faust --package pdast2wclap
 
       - name: Package binaries (zip, Windows)
         if: matrix.os == 'windows'
@@ -86,7 +86,7 @@ jobs:
           $ext    = "${{ matrix.ext }}"
           $os     = "${{ matrix.os }}"
           $arch   = "${{ matrix.arch }}"
-          $bins   = @("ast2pd", "pd2ast", "pdast2faust")
+          $bins   = @("ast2pd", "pd2ast", "pdast2faust", "pdast2wclap")
           $stage  = "pdast-${os}-${arch}"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           foreach ($bin in $bins) {
@@ -101,7 +101,7 @@ jobs:
           TARGET="${{ matrix.target }}"
           OS="${{ matrix.os }}"
           ARCH="${{ matrix.arch }}"
-          BINS=(ast2pd pd2ast pdast2faust)
+          BINS=(ast2pd pd2ast pdast2faust pdast2wclap)
           STAGE="pdast-${OS}-${ARCH}"
           mkdir -p "$STAGE"
           for BIN in "${BINS[@]}"; do
@@ -116,7 +116,7 @@ jobs:
           TARGET="${{ matrix.target }}"
           OS="${{ matrix.os }}"
           ARCH="${{ matrix.arch }}"
-          BINS=(ast2pd pd2ast pdast2faust)
+          BINS=(ast2pd pd2ast pdast2faust pdast2wclap)
           STAGE="pdast-${OS}-${ARCH}"
           mkdir -p "$STAGE"
           for BIN in "${BINS[@]}"; do

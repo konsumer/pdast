@@ -210,6 +210,14 @@ fn outlet_count(node: &Node) -> usize {
             }
             "pack" | "unpack" => args.len().max(2),
             "trigger" | "t" => args.len().max(1),
+            "poly" => {
+                let n = args
+                    .first()
+                    .and_then(|t| if let Token::Float(v) = t { Some(*v) } else { None })
+                    .unwrap_or(16.0)
+                    .max(1.0) as usize;
+                n * 3
+            }
             _ => 1,
         },
         NodeKind::Gui(_) => 1,
@@ -558,6 +566,24 @@ impl WclapGenerator {
             node_outlets.insert(n.id, outlet_count(n));
         }
 
+        // Signal-domain source ids — used by input_expr below to decide
+        // fan-in behavior: real PD automatically *sums* multiple signal
+        // connections landing on the same inlet (this is how virtually
+        // every dac~/mixing point in real patches works — wire N voices
+        // straight into one dac~ and PD sums them), but does no such thing
+        // for control connections (control fan-in is a discrete "last
+        // message wins" in real PD, which doesn't translate to this
+        // continuous model anyway, so it keeps the simpler "first
+        // connection wins" behavior it already had).
+        let mut signal_node_ids: HashSet<u32> = HashSet::new();
+        for n in &active {
+            if let NodeKind::Obj { name, .. } = &n.kind {
+                if domain_of(name) == Domain::Signal {
+                    signal_node_ids.insert(n.id);
+                }
+            }
+        }
+
         let has_audio_in = active
             .iter()
             .any(|n| matches!(&n.kind, NodeKind::Obj{name,..} if name=="adc~"));
@@ -645,6 +671,7 @@ impl WclapGenerator {
                 node,
                 &incoming,
                 &node_outlets,
+                &signal_node_ids,
                 &bus_map,
                 &signal_bus_map,
                 &throw_bus_map,
@@ -688,6 +715,7 @@ impl WclapGenerator {
         node: &Node,
         incoming: &[&Connection],
         node_outlets: &HashMap<u32, usize>,
+        signal_node_ids: &HashSet<u32>,
         bus_map: &BTreeMap<String, BusEntry>,
         signal_bus_map: &BTreeMap<String, BusEntry>,
         throw_bus_map: &BTreeMap<String, BusEntry>,
@@ -701,16 +729,29 @@ impl WclapGenerator {
 
         // Resolve the C expression feeding a given inlet: connected source's
         // state field, else a creation-arg constant, else a caller default.
+        // Multiple signal-domain connections landing on the same inlet are
+        // summed (matches real PD auto-mixing multiple signals wired into
+        // one inlet — most commonly dac~, but applies to any tilde inlet);
+        // multiple control connections keep the simpler "first one wins".
         let input_expr = |inlet: u32, default_lit: &str| -> String {
-            if let Some(c) = incoming.iter().find(|c| c.dst_inlet == inlet) {
+            let mut matches: Vec<&&Connection> =
+                incoming.iter().filter(|c| c.dst_inlet == inlet).collect();
+            if matches.is_empty() {
+                return default_lit.to_string();
+            }
+            let field_of = |c: &Connection| -> String {
                 let n_out = node_outlets.get(&c.src_node).copied().unwrap_or(1) as u32;
                 format!(
                     "st->{}",
                     field_o(c.src_node, if n_out > 1 { c.src_outlet } else { 0 })
                 )
-            } else {
-                default_lit.to_string()
+            };
+            if matches.len() == 1 || !signal_node_ids.contains(&matches[0].src_node) {
+                return field_of(matches[0]);
             }
+            matches.sort_by_key(|c| c.src_node);
+            let terms: Vec<String> = matches.iter().map(|c| field_of(c)).collect();
+            format!("({})", terms.join(" + "))
         };
 
         match &node.kind {
@@ -939,6 +980,33 @@ impl WclapGenerator {
                     state_fields: format!("  double {f};\n"),
                     init: format!("  st->{f} = 0.0;\n"),
                     compute: format!("  st->{f} = {sum};\n"),
+                }
+            }
+
+            // ── sub-patch/abstraction boundary objects ──────────────────────
+            // flatten_patch's resolve_boundaries() rewrites every connection
+            // that touched the `[pd name]`/abstraction placeholder to touch
+            // these nodes directly instead (parent-side wires now target an
+            // `inlet`/`inlet~` node's own inlet 0; sibling-side wires now
+            // source from an `outlet`/`outlet~` node's own outlet 0) — but
+            // that only fixes the *wiring*, not the value. The boundary node
+            // itself still needs to actually carry the value across, i.e.
+            // plain passthrough, same idiom as `f`/`float`.
+            "inlet" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &a)
+            }
+            "outlet" => {
+                let a = input_expr(0, "0.0");
+                simple_control(id, &a)
+            }
+            "inlet~" | "outlet~" => {
+                let a = input_expr(0, "0.0");
+                EmittedNode {
+                    domain: Domain::Signal,
+                    state_fields: format!("  double {f};\n"),
+                    init: format!("  st->{f} = 0.0;\n"),
+                    compute: format!("  st->{f} = {a};\n"),
                 }
             }
 
@@ -1354,6 +1422,83 @@ impl WclapGenerator {
                     compute: format!(
                         "  if (st->{fired} == 0.0) {{ st->{f} = 1.0; st->{fired} = 1.0; }} else {{ st->{f} = 0.0; }}\n"
                     ),
+                }
+            }
+
+            // ── poly: N-voice allocator, `poly <voices=16> <steal=0>` ───────
+            // Watches inlet 0 (pitch) paired with inlet 1 (velocity, 0 =
+            // note-off) for a genuine PD note event, same edge-detection
+            // idiom as `change` (a real event is "the pair differs from
+            // what it was last recompute", since notein's fields are
+            // otherwise sample-and-held between pd_note_on/off calls).
+            //
+            // Real PD's `poly` outputs a single (voice#, pitch, velocity)
+            // scalar triple meant to be fanned out with `[route 1 2 3 ...]`
+            // — but this codegen has no list-typed outlets for `route` to
+            // dispatch through (see README: symbol/list-typed routing isn't
+            // supported), so that idiom doesn't translate. Instead, each
+            // voice gets its own dedicated, continuously-held outlet triple:
+            // outlet 3*i / 3*i+1 / 3*i+2 = pitch / gate / velocity of voice
+            // i (0-based) — wire each one straight into its own `[voice]`
+            // abstraction instance, no `route` needed.
+            //
+            // Retriggering an already-held pitch reuses its existing voice.
+            // When every voice is busy: steal=0 silently drops the extra
+            // note (no overflow outlet — same list-typed-output limitation
+            // as above); steal!=0 steals whichever voice has been held
+            // longest.
+            "poly" => {
+                let n_voices = (if args.is_empty() { 16.0 } else { farg(0) }).max(1.0) as usize;
+                let steal = args.len() > 1 && farg(1) != 0.0;
+                let pitch = input_expr(0, "0.0");
+                let vel = input_expr(1, "0.0");
+                let vnote = format!("{f}_vnote");
+                let vage = format!("{f}_vage");
+                let vvel = format!("{f}_vvel");
+                let age = format!("{f}_age");
+                let ppitch = format!("{f}_ppitch");
+                let pvel = format!("{f}_pvel");
+
+                let mut state_fields = format!(
+                    "  double {vnote}[{n_voices}];\n  double {vage}[{n_voices}];\n  double {vvel}[{n_voices}];\n  double {age};\n  double {ppitch};\n  double {pvel};\n"
+                );
+                let mut init = format!(
+                    "  for (int _i = 0; _i < {n_voices}; _i++) {{ st->{vnote}[_i] = -1.0; st->{vage}[_i] = 0.0; st->{vvel}[_i] = 0.0; }}\n  st->{age} = 0.0; st->{ppitch} = -1e300; st->{pvel} = -1e300;\n"
+                );
+                for i in 0..n_voices {
+                    let p = field_o(id, (i * 3) as u32);
+                    let g = field_o(id, (i * 3 + 1) as u32);
+                    let v = field_o(id, (i * 3 + 2) as u32);
+                    state_fields.push_str(&format!("  double {p};\n  double {g};\n  double {v};\n"));
+                    init.push_str(&format!("  st->{p} = 0.0; st->{g} = 0.0; st->{v} = 0.0;\n"));
+                }
+
+                let steal_block = if steal {
+                    format!(
+                        "        if (_slot < 0) {{\n          int _oldest = 0; double _minage = st->{vage}[0];\n          for (int _i = 1; _i < {n_voices}; _i++) if (st->{vage}[_i] < _minage) {{ _minage = st->{vage}[_i]; _oldest = _i; }}\n          _slot = _oldest;\n        }}\n"
+                    )
+                } else {
+                    String::new()
+                };
+
+                let mut compute = format!(
+                    "  {{\n    double _pitch = {pitch};\n    double _vel = {vel};\n    if (_pitch != st->{ppitch} || _vel != st->{pvel}) {{\n      int _slot = -1;\n      if (_vel != 0.0) {{\n        for (int _i = 0; _i < {n_voices}; _i++) if (st->{vnote}[_i] == _pitch) {{ _slot = _i; break; }}\n        if (_slot < 0) for (int _i = 0; _i < {n_voices}; _i++) if (st->{vnote}[_i] < 0.0) {{ _slot = _i; break; }}\n{steal_block}        if (_slot >= 0) {{\n          st->{age} += 1.0;\n          st->{vnote}[_slot] = _pitch;\n          st->{vage}[_slot] = st->{age};\n          st->{vvel}[_slot] = _vel;\n        }}\n      }} else {{\n        for (int _i = 0; _i < {n_voices}; _i++) if (st->{vnote}[_i] == _pitch) {{ _slot = _i; break; }}\n        if (_slot >= 0) {{\n          st->{vnote}[_slot] = -1.0;\n          st->{vvel}[_slot] = 0.0;\n        }}\n      }}\n      st->{ppitch} = _pitch;\n      st->{pvel} = _vel;\n    }}\n"
+                );
+                for i in 0..n_voices {
+                    let p = field_o(id, (i * 3) as u32);
+                    let g = field_o(id, (i * 3 + 1) as u32);
+                    let v = field_o(id, (i * 3 + 2) as u32);
+                    compute.push_str(&format!(
+                        "    st->{p} = (st->{vnote}[{i}] >= 0.0 ? st->{vnote}[{i}] : st->{p});\n    st->{g} = (st->{vnote}[{i}] >= 0.0 ? 1.0 : 0.0);\n    st->{v} = st->{vvel}[{i}];\n"
+                    ));
+                }
+                compute.push_str("  }\n");
+
+                EmittedNode {
+                    domain: Domain::Control,
+                    state_fields,
+                    init,
+                    compute,
                 }
             }
 
@@ -2543,6 +2688,114 @@ mod tests {
         assert!(
             c.contains("st->arr_wave[_i]"),
             "tabread~ must read arr_wave: {c}"
+        );
+    }
+
+    // Runtime allocation/stealing behavior (round-robin, retrigger reuse,
+    // oldest-voice steal) is verified separately by compiling the generated
+    // C and driving it through a sequence of pd_note_on/pd_note_off calls
+    // (see PR description). This test just locks down the static shape:
+    // `poly <n>` gets exactly 3 outlets per voice, wired from notein.
+    #[test]
+    fn poly_gets_three_outlets_per_voice_and_watches_notein() {
+        let src = "#N canvas 0 50 450 300 12;\r\n\
+                    #X obj 20 20 notein;\r\n\
+                    #X obj 20 60 poly 2 1;\r\n\
+                    #X connect 0 0 1 0;\r\n\
+                    #X connect 0 1 1 1;\r\n";
+        let (c, warn) = generate_c(src);
+        assert!(warn.is_empty(), "unexpected warnings: {warn:?}");
+        // 2 voices * 3 outlets each = fields n1 (voice0 pitch), n1_o1
+        // (voice0 gate), n1_o2 (voice0 velocity), n1_o3..n1_o5 (voice1).
+        for field in ["n1", "n1_o1", "n1_o2", "n1_o3", "n1_o4", "n1_o5"] {
+            assert!(
+                c.contains(&format!("double {field};")),
+                "missing outlet field {field}: {c}"
+            );
+        }
+        // Reads notein's pitch (n0) and velocity (n0_o1) fields directly.
+        assert!(c.contains("double _pitch = st->n0;"), "{c}");
+        assert!(c.contains("double _vel = st->n0_o1;"), "{c}");
+        // Steal path only emitted when the steal creation-arg is nonzero.
+        assert!(c.contains("_oldest"), "steal=1 should emit steal logic: {c}");
+    }
+
+    // Regression test for a real bug: resolve_boundaries() rewires
+    // connections that touched a subpatch placeholder to instead touch its
+    // inlet/outlet nodes directly, but those nodes still need their own
+    // passthrough codegen to actually carry the value — without it, every
+    // value crossing a sub-patch/abstraction boundary silently became 0
+    // (reported as "no wclap codegen for 'inlet'" etc.) despite the wiring
+    // itself being correct.
+    #[test]
+    fn subpatch_boundary_nodes_pass_values_through_not_zero_stubs() {
+        // Inline subpatch: inlet -> +1 -> outlet~ (control in, signal out,
+        // to exercise both `inlet`/`outlet` and `inlet~`/`outlet~`).
+        let src = "#N canvas 0 50 450 300 12;\r\n\
+                    #X obj 20 20 r x;\r\n\
+                    #N canvas 0 0 450 300 12;\r\n\
+                    #X obj 10 10 inlet;\r\n\
+                    #X obj 10 40 + 1;\r\n\
+                    #X obj 10 70 sig~;\r\n\
+                    #X obj 10 100 outlet~;\r\n\
+                    #X connect 0 0 1 0;\r\n\
+                    #X connect 1 0 2 0;\r\n\
+                    #X connect 2 0 3 0;\r\n\
+                    #X restore 100 20 pd voice;\r\n\
+                    #X obj 100 60 dac~;\r\n\
+                    #X connect 0 0 1 0;\r\n\
+                    #X connect 1 0 2 0;\r\n";
+        let (c, warn) = generate_c(src);
+        assert!(warn.is_empty(), "unexpected warnings: {warn:?}");
+        assert!(
+            !c.contains("inlet") && !c.contains("outlet"),
+            "boundary object names shouldn't leak into codegen at all: {c}"
+        );
+        // r x (n0) -> [subpatch placeholder consumes id 1] -> inlet node
+        // (n2, passthrough) -> +1 (n3) -> sig~ (n4) -> outlet~ (n5,
+        // passthrough) -> dac~ reads n5.
+        assert!(c.contains("st->n2 = st->n0;"), "inlet must mirror n0: {c}");
+        assert!(
+            c.contains("st->n3 = (st->n2) + (1)"),
+            "+1 must read the inlet's field, not a zero stub: {c}"
+        );
+        assert!(
+            c.contains("st->n5 = st->n4;"),
+            "outlet~ must mirror the internal signal: {c}"
+        );
+        assert!(c.contains("st->n5"), "dac~ must read outlet~'s field: {c}");
+    }
+
+    // Regression test for a real bug: wiring N signal sources into the same
+    // dac~ inlet (the standard, overwhelmingly common way to mix multiple
+    // voices in real PD — PD sums them automatically) only carried the
+    // first-declared source through; the other N-1 were computed correctly
+    // but silently dropped on the floor, since input_expr only ever
+    // resolved a single incoming connection per inlet. Caught via a
+    // 4-voice polyphonic synth patch where voices 2-4 were verified (by
+    // compiling and running the generated C) to have correct gate/pitch/
+    // envelope but contributed ~0 energy to the actual output.
+    #[test]
+    fn multiple_signal_sources_into_one_dac_inlet_are_summed_not_dropped() {
+        let src = "#N canvas 0 50 450 300 12;\r\n\
+                    #X obj 20 20 osc~ 220;\r\n\
+                    #X obj 20 60 osc~ 440;\r\n\
+                    #X obj 20 100 osc~ 660;\r\n\
+                    #X obj 20 140 dac~;\r\n\
+                    #X connect 0 0 3 0;\r\n\
+                    #X connect 1 0 3 0;\r\n\
+                    #X connect 2 0 3 0;\r\n\
+                    #X connect 0 0 3 1;\r\n";
+        let (c, warn) = generate_c(src);
+        assert!(warn.is_empty(), "unexpected warnings: {warn:?}");
+        assert!(
+            c.contains("(st->n0 + st->n1 + st->n2)"),
+            "dac~ left channel must sum all three oscillators, not just the first: {c}"
+        );
+        // Right channel has only one source — no summing needed, same as before.
+        assert!(
+            !c.contains("(st->n0 + st->n0"),
+            "single-connection inlet shouldn't grow a spurious sum: {c}"
         );
     }
 }

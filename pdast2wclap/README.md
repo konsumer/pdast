@@ -64,13 +64,51 @@ Any `[receive NAME]` / `[r NAME]` / `[value NAME]` object with no matching `[sen
 | Delay lines         | `delwrite~`, `delread~`, `vd~` (shared circular buffer, keyed by name)                                                                                                 |
 | Arrays / tables     | `tabread~`, `tabread`, `tabwrite~`, and the array data itself (seeded from the saved patch)                                                                            |
 | Audio I/O           | `dac~`, `adc~`                                                                                                                                                         |
-| MIDI                | `notein`, `ctlin`, `bendin`, `touchin`, `pgmin` (real events, not UI-metadata)                                                                                         |
+| MIDI                | `notein`, `ctlin`, `bendin`, `touchin`, `pgmin` (real events, not UI-metadata), `poly` (voice allocator, see below)                                                    |
 | Scheduler           | `metro`, `delay`/`del`, `pipe`, `timer` — sample-accurate, see below                                                                                                   |
 | Control math        | `+ - * / max min mod pow`, `sin cos atan atan2 abs sqrt log exp wrap clip int`, comparisons (`> < >= <= == != && \|\| !`), `mtof ftom dbtorms rmstodb dbtopow powtodb` |
 | Routing             | `moses`, `spigot`, `sel`/`select`, `route`, `change`, `pack`, `unpack`, `swap`, `trigger`/`t`, `line`, `random`, `f`/`float`, `loadbang` (fires once on load)          |
 | Buses               | `send` / `s`, `receive` / `r`, `value` (control-rate), `send~` / `receive~`, `throw~` / `catch~` (signal-rate, own namespace)                                          |
+| Sub-patch boundary  | `inlet`, `outlet`, `inlet~`, `outlet~` (passthrough — see "Full pipeline" above; every sub-patch/abstraction instance needs these to actually carry values across)    |
 
 Anything else compiles to a harmless zero stub with a `warning:` on stderr rather than failing — the per-object codegen (`wclap_gen.rs`) is built to grow this list. Not yet implemented: `expr`/`expr~`, `cpole~`/`czero~`, multi-message boxes, and symbol/list-typed routing.
+
+### `poly`: build your own polyphony out of PD sub-patches
+
+`[poly <voices=16> <steal=0>]` is a voice allocator, for patches that want real
+multi-note polyphony assembled by hand from PD abstractions — the CLAP-level
+`pd_note_on`/`pd_note_off` ABI stays a single (pitch, velocity) event stream
+(matching how a real MIDI note-on/off arrives), and `poly` fans that one
+stream out across N voice slots inside the generated C.
+
+Wire `notein`'s pitch/velocity outlets into `poly`'s two inlets. On every
+genuine note event (edge-detected the same way `change` is — see below —
+so a steady held note doesn't re-trigger every block) it either assigns a
+free voice, reuses the voice already holding that exact pitch (retriggering
+a held note doesn't steal a second voice), or — once every voice is busy —
+either steals whichever voice has been held longest (`steal` nonzero) or
+silently drops the extra note (`steal` 0 or omitted, the default).
+
+**This does not use PD's real `poly` contract.** Real PD/Max `poly` emits a
+single `(voice#, pitch, velocity)` triple meant to be fanned out downstream
+with `[route 1 2 3 ...]` — but this codegen has no list-typed outlets for
+`route` to dispatch through (see the symbol/list-typed routing gap above),
+so that idiom can't be reproduced. Instead **every voice gets its own
+permanently-assigned, continuously-held outlet triple**: for voice `i`
+(0-based), outlet `3*i` = pitch, `3*i+1` = gate (1.0 while held, 0.0 while
+free), `3*i+2` = velocity. Wire outlet triple `i` straight into instance `i`
+of your voice abstraction (an inline sub-patch or a separate `voice.pd`
+loaded via `pd2ast`'s abstraction search path — both flatten identically,
+see "Full pipeline" above) — no `route`, no dispatch logic needed in the
+patch at all. `poly 4 1` therefore has 12 outlets; wire up 4 copies of your
+voice patch.
+
+Verified by compiling generated code and driving it through a real note
+sequence: round-robin assignment across free voices, retriggering an
+already-held pitch reuses its voice instead of stealing a second one,
+`steal 1` correctly steals the *oldest*-held voice when full, and a
+note-off correctly finds and releases the right voice even after it was
+reassigned by a steal.
 
 Message boxes (`[1 10(`-style) are also **not reactive**: a message box compiles to a fixed constant taken from its literal contents at build time, not a value that's re-emitted when something bangs it — wiring two different message boxes into the same downstream inlet (a common attack/release idiom: `[sel 0] -> [1 10(` / `[0 200(` -> one `vline~` inlet) silently keeps only the first-declared one and drops the other, since `input_expr` resolution only honors one incoming connection per inlet. Drive dynamic targets through control-math objects (comparisons, `moses`, `spigot`, `f`) instead of through message boxes.
 

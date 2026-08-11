@@ -1,0 +1,17 @@
+#N canvas 0 50 450 400 12;
+#X obj 20 20 phasor~ 5;
+#X obj 20 60 *~ 20;
+#X obj 20 100 +~ 440;
+#X obj 20 140 osc~;
+#X obj 20 180 *~ 0.5;
+#X obj 20 220 dac~;
+#X text 10 10 pdast2mozzi PlatformIO example: vibrato tone;
+#X text 10 260 phasor~ 5 -> *~ 20 -> +~ 440 -> osc~ freq: a 5Hz LFO
+sweeps a 440Hz tone +/- 20Hz. Edit this patch in Pd and re-run
+generate.sh to regenerate src/main.ino.;
+#X connect 0 0 1 0;
+#X connect 1 0 2 0;
+#X connect 2 0 3 0;
+#X connect 3 0 4 0;
+#X connect 4 0 5 0;
+#X connect 4 0 5 1;

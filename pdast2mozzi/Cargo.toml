@@ -1,0 +1,13 @@
+[package]
+name = "pdast2mozzi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "CLI: convert pdast JSON AST to a Mozzi (Arduino) sketch"
+license = "Zlib"
+authors = ["David Konsumer (@konsumer)"]
+
+[dependencies]
+pdast = { path = "../pdast" }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }

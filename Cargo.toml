@@ -4,5 +4,6 @@ members = [
     "pd2ast",
     "pdast2faust", "ast2pd",
     "pdast2wclap",
+    "pdast2mozzi",
 ]
 resolver = "2"

@@ -17,6 +17,8 @@ pdast/        - Core library (parse .pd → AST, emit AST → .pd, JSON serializ
 pd2ast/       - CLI: load patch from disk, resolve abstractions, print JSON
 ast2pd/       - CLI: convert JSON AST back to .pd patch
 pdast2faust/  - CLI: read JSON AST and generate Faust DSP code
+pdast2wclap/  - CLI: read JSON AST and generate a self-contained CLAP-wasm plugin (C)
+pdast2mozzi/  - CLI: read JSON AST and generate a Mozzi (Arduino) sketch (C++)
 ```
 
 Additional files:

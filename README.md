@@ -11,6 +11,7 @@ The project is a Rust workspace with five crates:
 | [`ast2pd`](ast2pd/README.md)           | CLI — convert a JSON AST back to a `.pd` patch file                      |
 | [`pdast2faust`](pdast2faust/README.md) | CLI — read a JSON AST and generate Faust DSP code                        |
 | [`pdast2wclap`](pdast2wclap/README.md) | CLI — read a JSON AST and generate a self-contained CLAP-wasm plugin (C) |
+| [`pdast2mozzi`](pdast2mozzi/README.md) | CLI — read a JSON AST and generate a Mozzi (Arduino) sketch (C++) |
 
 ## Installation
 
@@ -45,6 +46,7 @@ cargo install --path pd2ast
 cargo install --path ast2pd
 cargo install --path pdast2faust
 cargo install --path pdast2wclap
+cargo install --path pdast2mozzi
 ```
 
 Or build everything without installing:

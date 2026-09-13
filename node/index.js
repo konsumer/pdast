@@ -6,8 +6,8 @@
  *   const result = parse(pdFileContent);
  */
 
-import wasmInit, { parse, parseToJson, emitPatch, emitPatchFromJson } from '../pdast/pkg/pdast.js'
-export { parse, parseToJson, emitPatch, emitPatchFromJson }
+import wasmInit, { parse, parseToJson, emitPatch, emitPatchFromJson, wclapToC } from '../pdast/pkg/pdast.js'
+export { parse, parseToJson, emitPatch, emitPatchFromJson, wclapToC }
 
 let _init
 export const init = (url) => (_init ??= wasmInit(url))

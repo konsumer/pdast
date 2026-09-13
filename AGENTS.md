@@ -13,7 +13,8 @@ pdast (PureData AST) is a Rust workspace that parses PureData `.pd` patch files 
 Rust workspace with 4 crates:
 
 ```
-pdast/        - Core library (parse .pd → AST, emit AST → .pd, JSON serialization)
+pdast/        - Core library (parse .pd → AST, emit AST → .pd, JSON serialization,
+                WCLAP C codegen behind the `wclap` feature: src/wclap.rs)
 pd2ast/       - CLI: load patch from disk, resolve abstractions, print JSON
 ast2pd/       - CLI: convert JSON AST back to .pd patch
 pdast2faust/  - CLI: read JSON AST and generate Faust DSP code
@@ -23,7 +24,11 @@ pdast2mozzi/  - CLI: read JSON AST and generate a Mozzi (Arduino) sketch (C++)
 
 Additional files:
 - `pdast.py` - Python wrapper that calls CLI tools
-- `web/` - Web components and demo pages
+- `web/` - Web components and demo pages (the demo's **WCLAP** button compiles the
+  loaded patch to C via `wclapToC` in the WASM build, then compiles that C to a
+  `.wasm` plugin in-browser: `web/wclap.js` + `web/wclap-worker.js`, which loads the
+  browsercc LLVM toolchain from a CDN and links against the vendored CLAP runtime
+  shim + headers in `web/vendor/`)
 - `node/` - Node.js package wrapper
 - `tests/` - Test fixtures and integration tests
 
@@ -112,6 +117,7 @@ Template files (`.dsp`) define `pdobj` with optional parameters matching PD crea
 2. Add to token types if new syntax required
 3. Update emitter if needed (`pdast/src/emit/`)
 4. Add Faust template to `pdast2faust/src/lib/templates/` or lib directory
+5. Add per-object codegen in `pdast/src/wclap.rs` if the WCLAP backend should support it
 
 **Extending WASM interface:**
 1. Add function to `pdast/src/wasm.rs`

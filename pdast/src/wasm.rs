@@ -13,6 +13,7 @@
 //! | [`wasm_parse_to_json`] | patch text + abstractions JSON | JSON AST |
 //! | [`wasm_emit_to_pd`] | JSON AST | `.pd` text |
 //! | [`wasm_patch_to_pd`] | patch text + abstractions JSON | `.pd` text (roundtrip) |
+//! | [`wasm_wclap_to_c`] | JSON AST | WCLAP C source (feature `wclap`) |
 //!
 //! ### Abstractions map
 //!
@@ -40,6 +41,7 @@
 //! | [`js::js_parse`] | Returns a JS object; accepts an optional JS loader callback |
 //! | [`js::js_parse_to_json`] | Same but returns a JSON string |
 //! | [`js::js_emit`] | Accepts a JS object AST, returns `.pd` string |
+//! | [`js::js_wclap_to_c`] | Accepts a JS object AST, returns WCLAP C source (feature `wclap`) |
 //!
 //! Build with `wasm-pack`:
 //! ```sh
@@ -126,6 +128,24 @@ pub fn wasm_patch_to_pd(patch_content: &str, abstractions_json: &str) -> String 
     match parse_patch(patch_content, |name| map.get(name).cloned()) {
         Ok(result) => emit_patch(&result.patch),
         Err(e) => error_json(&e.to_string()),
+    }
+}
+
+/// Generate the CLAP-wasm (WCLAP) C source for a JSON AST string.
+///
+/// Accepts the JSON produced by [`wasm_parse_to_json`] (either the full
+/// `ParseResult` object with a `"patch"` key, or a bare `Patch` object).
+///
+/// The result is a C translation unit implementing the `pd_*` ABI in
+/// `pd_wclap.h` — it still needs the CLAP runtime shim to become a loadable
+/// plugin (see the web demo's `vendor/` directory).
+///
+/// Returns the C source on success, or `{"error": "..."}` on failure.
+#[cfg(feature = "wclap")]
+pub fn wasm_wclap_to_c(ast_json: &str) -> String {
+    match patch_from_json_flexible(ast_json) {
+        Ok(p) => crate::wclap::patch_to_c(&p).0,
+        Err(e) => error_json(&e),
     }
 }
 
@@ -233,8 +253,20 @@ pub extern "C" fn wasm_patch_to_pd_abi(
     string_to_abi(wasm_patch_to_pd(patch, abs))
 }
 
-// ── JS-host API (wasm-bindgen) ────────────────────────────────────────────────
+/// Generate CLAP-wasm (WCLAP) C source from a JSON AST.
+///
+/// - `ast_ptr/ast_len`: UTF-8 JSON AST string in WASM memory.
+///
+/// Returns `(result_ptr << 32) | result_len`. Free result with `wasm_dealloc`.
+#[cfg(feature = "wclap")]
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_wclap_to_c_abi(ast_ptr: *const u8, ast_len: u32) -> i64 {
+    // SAFETY: caller guarantees valid UTF-8 in WASM memory.
+    let ast = unsafe { str_from_parts(ast_ptr, ast_len) };
+    string_to_abi(wasm_wclap_to_c(ast))
+}
 
+// ── JS-host API (wasm-bindgen) ────────────────────────────────────────────────
 #[cfg(feature = "wasm-js")]
 mod js {
     use super::*;
@@ -317,5 +349,23 @@ mod js {
     pub fn js_emit_from_json(ast_json: &str) -> Result<String, JsValue> {
         let patch = patch_from_json_flexible(ast_json).map_err(|e| JsValue::from_str(&e))?;
         Ok(emit_patch(&patch))
+    }
+
+    /// Generate CLAP-wasm (WCLAP) C source from a JS AST object.
+    ///
+    /// Accepts the JS object returned by [`js_parse`], or a bare `Patch`
+    /// object (without the `warnings` wrapper). The result is a C translation
+    /// unit implementing the `pd_*` ABI in `pd_wclap.h`; compiling it together
+    /// with a CLAP runtime shim yields a loadable WCLAP plugin.
+    ///
+    /// Throws a JS `Error` if the object cannot be deserialised.
+    #[cfg(feature = "wclap")]
+    #[wasm_bindgen(js_name = "wclapToC")]
+    pub fn js_wclap_to_c(ast: JsValue) -> Result<String, JsValue> {
+        let patch = serde_wasm_bindgen::from_value::<crate::Patch>(ast.clone()).or_else(|_| {
+            serde_wasm_bindgen::from_value::<crate::ParseResult>(ast).map(|r| r.patch)
+        });
+        let patch = patch.map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(crate::wclap::patch_to_c(&patch).0)
     }
 }

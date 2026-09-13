@@ -27,6 +27,8 @@ pub mod parse;
 pub mod types;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
+#[cfg(feature = "wclap")]
+pub mod wclap;
 
 pub use emit::emit_patch;
 pub use error::ParseError;

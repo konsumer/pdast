@@ -19,6 +19,7 @@
  *   clear()                       — remove all loaded files
  *   getLoader()                   — returns the abstraction loader function
  *                                   (name: string) => string | null
+ *   wclapC(name)                  — WCLAP C source for a loaded patch/AST
  *
  * Events:
  *   pd-loaded   — fired after each batch; detail = { patches, astFiles, warnings }
@@ -137,6 +138,7 @@ class PdLoader extends HTMLElement {
         await mod.default()
       }
       this._parse = mod.parse
+      this._mod = mod
       this._wasmReady = true
     } catch (e) {
       console.error('[pd-loader] WASM load failed:', e)
@@ -311,6 +313,22 @@ class PdLoader extends HTMLElement {
    */
   getLoader() {
     return (name) => this.patches.get(name + '.pd') ?? this.patches.get(name) ?? null
+  }
+
+  /**
+   * Generate CLAP-wasm (WCLAP) C source for a loaded patch or AST file.
+   *
+   * The C implements the fixed `pd_*` ABI and still needs the CLAP runtime
+   * shim to become a loadable plugin — see `web/wclap-worker.js`.
+   *
+   * @param {string} name  file name as shown in the file list
+   * @returns {string} C source
+   */
+  wclapC(name) {
+    const result = this.astFiles.get(name)
+    if (!result) throw new Error(`No AST loaded for "${name}"`)
+    if (!this._mod?.wclapToC) throw new Error('This WASM build has no WCLAP support')
+    return this._mod.wclapToC(result)
   }
 
   _updateList() {

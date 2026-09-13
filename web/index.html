@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>pdast viewer</title>
+    <title>pdast</title>
     <style>
       *,
       *::before,
@@ -64,10 +64,6 @@
         letter-spacing: 0.05em;
         color: var(--accent);
       }
-      #topbar h1 span {
-        color: var(--dim);
-        font-weight: 400;
-      }
       #topbar nav {
         display: flex;
         gap: 0.25em;
@@ -91,6 +87,41 @@
       #topbar nav button.active {
         border-color: var(--accent);
         color: var(--accent);
+      }
+
+      /* ── WCLAP button ── */
+      .wclap-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4em;
+        border-color: var(--accent2, var(--accent));
+        color: var(--accent2, var(--accent));
+        font-weight: 600;
+        letter-spacing: 0.03em;
+      }
+      .wclap-btn:hover:not(:disabled) {
+        background: color-mix(in srgb, var(--accent2, var(--accent)) 18%, transparent);
+      }
+      .wclap-btn:disabled {
+        cursor: progress;
+        opacity: 0.75;
+      }
+      .wclap-btn .spinner {
+        display: none;
+        width: 0.8em;
+        height: 0.8em;
+        border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+        border-top-color: currentColor;
+        border-radius: 50%;
+        animation: wclap-spin 0.7s linear infinite;
+      }
+      .wclap-btn.loading .spinner {
+        display: inline-block;
+      }
+      @keyframes wclap-spin {
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       /* ── Sidebar ── */
@@ -233,8 +264,12 @@
   </head>
   <body>
     <div id="topbar">
-      <h1>pdast <span>viewer</span></h1>
+      <h1>pdast</h1>
       <nav>
+        <button class="wclap-btn" id="wclap-btn" title="Compile this patch to a CLAP-wasm plugin">
+          <span class="spinner"></span>
+          <span class="label">WCLAP</span>
+        </button>
         <button class="view-btn active" data-panel="graph">Graph</button>
         <button class="view-btn" data-panel="ast">AST</button>
       </nav>
@@ -278,6 +313,7 @@
       import './components/pd-loader.js'
       import './components/pd-ast-viewer.js'
       import './components/pd-patch-graph.js'
+      import { compileWclap } from './wclap.js'
 
       const loader = document.getElementById('loader')
       const graphView = document.getElementById('graph-view')
@@ -323,14 +359,14 @@
 
         // Warnings bar
         if (warnings.length) {
-          warnBar.textContent =
+          showMessage(
             `⚠ ${warnings.length} warning${warnings.length !== 1 ? 's' : ''}: ` +
-            warnings
-              .slice(0, 3)
-              .map((w) => w.message)
-              .join(' · ') +
-            (warnings.length > 3 ? ` … (+${warnings.length - 3} more)` : '')
-          warnBar.classList.add('visible')
+              warnings
+                .slice(0, 3)
+                .map((w) => w.message)
+                .join(' · ') +
+              (warnings.length > 3 ? ` … (+${warnings.length - 3} more)` : '')
+          )
         } else {
           warnBar.classList.remove('visible')
         }
@@ -344,8 +380,7 @@
 
       // Error display
       loader.addEventListener('pd-error', (e) => {
-        warnBar.textContent = `✕ Error loading "${e.detail.file}": ${e.detail.error?.message ?? e.detail.error}`
-        warnBar.classList.add('visible')
+        showError(`✕ Error loading "${e.detail.file}": ${e.detail.error?.message ?? e.detail.error}`)
       })
 
       // ── Node click → detail drawer ────────────────────────────────────────────────
@@ -354,11 +389,73 @@
         nodeDetail.classList.add('visible')
       }
 
+      /** Show a message in the warnings/errors bar. */
+      function showMessage(text, isError = false) {
+        warnBar.textContent = text
+        warnBar.style.color = isError ? 'var(--error)' : ''
+        warnBar.classList.add('visible')
+      }
+
+      function showError(text) {
+        showMessage(text, true)
+      }
+
       graphView.addEventListener('pd-node-click', (e) => showNodeDetail(e.detail.node))
       astView.addEventListener('pd-node-click', (e) => showNodeDetail(e.detail))
 
       document.getElementById('detail-close').addEventListener('click', () => {
         nodeDetail.classList.remove('visible')
+      })
+
+      // ── WCLAP: patch → C → wasm → download ────────────────────────────────────────
+      const wclapBtn = document.getElementById('wclap-btn')
+      const wclapLabel = wclapBtn.querySelector('.label')
+
+      /** Plugin ids and patch names are free-form; keep the C literals boring. */
+      const wclapIdent = (name) => name.replace(/\.(pd|json)$/i, '').replace(/[^\w.-]/g, '_') || 'patch'
+
+      function downloadWasm(name, bytes) {
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/wasm' }))
+        const link = document.createElement('a')
+        link.href = url
+        link.download = name
+        link.click()
+        URL.revokeObjectURL(url)
+      }
+
+      function wclapBusy(busy, message = 'WCLAP') {
+        wclapBtn.disabled = busy
+        wclapBtn.classList.toggle('loading', busy)
+        wclapLabel.textContent = message
+      }
+
+      wclapBtn.addEventListener('click', async () => {
+        if (!currentName) {
+          showError('Load a .pd patch or .json AST before building a WCLAP')
+          return
+        }
+
+        wclapBusy(true, 'C')
+        try {
+          const cSource = loader.wclapC(currentName)
+          const name = wclapIdent(currentName)
+          const { wasm, output } = await compileWclap({ cSource, pluginId: `com.pdast.web.${name}`, pluginName: name }, (message) => wclapBusy(true, message))
+          downloadWasm(`${name}.wasm`, wasm)
+
+          const warnings = output.split('\n').filter((line) => line.includes('warning:'))
+          if (warnings.length) {
+            console.warn('[wclap] compiler output:\n' + output)
+            showMessage(`Built ${name}.wasm (${warnings.length} compiler warning${warnings.length !== 1 ? 's' : ''}: ${warnings[0].trim()})`)
+          } else {
+            console.log('[wclap] compiler output:\n' + output)
+            showMessage(`Built ${name}.wasm (${(wasm.length / 1024).toFixed(0)} KB)`)
+          }
+        } catch (err) {
+          console.error('[wclap]', err)
+          showError(`✕ WCLAP build failed: ${err?.message ?? err}`)
+        } finally {
+          wclapBusy(false)
+        }
       })
 
       // ── Drag and drop onto body ───────────────────────────────────────────────────

@@ -18,7 +18,7 @@ cargo build -p pdast --target wasm32-wasip1 --release
 ### JavaScript / TypeScript (wasm-pack output)
 
 ```js
-import { parse, parseToJson, emitPatch, emitPatchFromJson } from './pdast/pkg/pdast.js'
+import { parse, parseToJson, emitPatch, emitPatchFromJson, wclapToC } from './pdast/pkg/pdast.js'
 
 const pd = `#N canvas 0 50 450 300 12;\r\n#X obj 30 27 osc~ 440;\r\n...`
 
@@ -38,9 +38,15 @@ const pdOut = emitPatch(result)
 // Parse → JSON string (useful for storage or passing to another language)
 const json = parseToJson(pd)
 const pdOut2 = emitPatchFromJson(json)
+
+// Generate CLAP-wasm (WCLAP) C source from a parsed patch (needs the `wclap`
+// feature — `wasm-pack build pdast --features wasm-js,wclap`). The C implements
+// the pd_* ABI in pdast2wclap/pd_wclap.h and still needs a CLAP runtime shim to
+// become a loadable plugin; web/wclap-worker.js does exactly that in-browser.
+const cSource = wclapToC(result)
 ```
 
-All four exported functions throw a JS `Error` on failure.
+All exported functions throw a JS `Error` on failure.
 
 ### Non-JS WASM hosts (WASI / raw ABI)
 
@@ -53,6 +59,7 @@ The module always exports these low-level C ABI functions, usable from any WASM 
 | `wasm_parse_to_json_abi(patch_ptr, patch_len, abs_ptr, abs_len) -> i64` | Parse patch → JSON AST          |
 | `wasm_emit_to_pd_abi(ast_ptr, ast_len) -> i64`                          | JSON AST → `.pd` text           |
 | `wasm_patch_to_pd_abi(patch_ptr, patch_len, abs_ptr, abs_len) -> i64`   | Parse + emit in one call        |
+| `wasm_wclap_to_c_abi(ast_ptr, ast_len) -> i64`                          | JSON AST → WCLAP C source (`wclap` feature) |
 
 All string functions follow the same convention:
 

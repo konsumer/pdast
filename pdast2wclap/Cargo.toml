@@ -8,6 +8,6 @@ license = "Zlib"
 authors = ["David Konsumer (@konsumer)"]
 
 [dependencies]
-pdast = { path = "../pdast" }
+pdast = { path = "../pdast", features = ["wclap"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }

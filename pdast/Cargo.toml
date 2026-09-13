@@ -23,6 +23,11 @@ serde-wasm-bindgen = { version = "0.6", optional = true }
 js-sys = { version = "0.3", optional = true }
 
 [features]
+# CLAP-wasm (WCLAP) C code generator (see `src/wclap.rs`). Pulled in by the
+# `pdast2wclap` CLI, and by the WASM build (see `src/wasm.rs`) so the web demo
+# can turn a patch into C in the browser.
+wclap = []
+
 # JS-host WASM: returns JS objects directly via wasm-bindgen.
 # Build with: cargo build --target wasm32-unknown-unknown --features wasm-js
 # Or:         wasm-pack build --features wasm-js

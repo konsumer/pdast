@@ -44,7 +44,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "wasm-pack build --target web pdast --features wasm-js && node -e \"require('fs').rmSync('pdast/pkg/.gitignore',{force:true})\"",
+    "build": "wasm-pack build --target web pdast --features wasm-js,wclap && node -e \"require('fs').rmSync('pdast/pkg/.gitignore',{force:true})\"",
     "prepublishOnly": "npm run build",
     "start": "npx -y live-server web --port=4321 --no-browser --mount=/pdast:pdast/pkg",
     "prestart": "npm run build",

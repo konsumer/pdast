@@ -6,7 +6,7 @@ The project is a Rust workspace with five crates:
 
 | Crate                                  | What it does                                                             |
 | -------------------------------------- | ------------------------------------------------------------------------ |
-| [`pdast`](pdast/README.md)             | Core library — parse `.pd` → AST, emit AST → `.pd`, JSON serialization   |
+| [`pdast`](pdast/README.md)             | Core library — parse `.pd` → AST, emit AST → `.pd`, JSON serialization, WCLAP C codegen (`wclap` feature) |
 | [`pd2ast`](pd2ast/README.md)           | CLI — load a patch from disk (resolving abstractions) and print JSON     |
 | [`ast2pd`](ast2pd/README.md)           | CLI — convert a JSON AST back to a `.pd` patch file                      |
 | [`pdast2faust`](pdast2faust/README.md) | CLI — read a JSON AST and generate Faust DSP code                        |
@@ -23,9 +23,13 @@ If you want to use it as a library in a web-page, or node/bun/deno/etc app it's 
 
 ```js
 // the main lib
-import { parse, emitPatch } from '@konsumer/pdast'
+import { parse, emitPatch, wclapToC } from '@konsumer/pdast'
 
 const result = parse(pdFileContent)
+
+// generate CLAP-wasm (WCLAP) C source for a patch (needs a build with the
+// `wclap` feature — see pdast/README.md)
+const cSource = wclapToC(result)
 
 // web-components you can use in your own thing
 import '@konsumer/pdast/components'
@@ -36,6 +40,11 @@ import '@konsumer/pdast/components'
 // <pd-ast-viewer/>
 // <pd-patch-graph/>
 ```
+
+The bundled demo (`npm start`) also has a **WCLAP** button: it generates the C for
+the selected patch with the WASM build, compiles it together with a vendored CLAP
+runtime shim, and downloads the resulting `.wasm` — all in the browser, using
+[browsercc](https://github.com/BertalanD/browsercc)'s WASM build of LLVM.
 
 ### rust
 

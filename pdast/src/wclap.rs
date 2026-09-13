@@ -1,9 +1,13 @@
 //! C code generator from pdast AST — emits a self-contained "DSP unit" that
 //! implements the fixed `pd_*` ABI documented in `pd_wclap.h`. A separate,
-//! hand-written CLAP "runtime shim" (poketrack/plugins/pd2wclap/runtime-shim.c)
-//! links against this generated code and provides the actual CLAP plugin
-//! surface (clap_entry, audio/note/params extensions, event-time-splitting
-//! process loop).
+//! hand-written CLAP "runtime shim" (poketrack/plugins/pd2wclap/runtime-shim.c,
+//! vendored for the web demo under `web/vendor/`) links against this generated
+//! code and provides the actual CLAP plugin surface (clap_entry, audio/note/
+//! params extensions, event-time-splitting process loop).
+//!
+//! Lives here rather than in the `pdast2wclap` CLI so the same generator is
+//! reachable from the WASM build (see `wasm::wasm_wclap_to_c`), which is what
+//! lets the web demo turn a loaded patch into C in the browser.
 //!
 //! # Design notes (vs. pdast2faust, which this borrows its shape from)
 //!
@@ -39,7 +43,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use pdast::types::{Canvas, Connection, Node, NodeKind, SubPatchContent, Token};
+use crate::types::{Canvas, Connection, Node, NodeKind, Patch, SubPatchContent, Token};
 
 // ── Flattening (sub-patch inlining with $ substitution) ────────────────────
 //
@@ -559,12 +563,21 @@ pub struct WclapGenerator {
     /// Message-node id -> how many inlet latch fields it declared (0 for a
     /// pure source like `notein`). Bounds both cold-inlet storage and how far
     /// a list arriving at the hot inlet is distributed across cold inlets.
-    
     node_latch_count: HashMap<u32, u32>,
     /// Objects whose cold inlet writes the *same* cell the hot inlet outputs
     /// (`f`/`float`, `i`/`int`): PD's float box holds a single value, so a
     /// cold-inlet write must be visible to the next hot-inlet bang.
     cold_aliases_hot: HashSet<u32>,
+}
+
+/// Generate the C source for a whole patch, plus any codegen warnings.
+///
+/// Convenience wrapper over [`WclapGenerator`] for callers that just want the
+/// generated source (the `pdast2wclap` CLI, the WASM bindings).
+pub fn patch_to_c(patch: &Patch) -> (String, Vec<String>) {
+    let mut generator = WclapGenerator::new();
+    let c_code = generator.generate(&patch.root);
+    (c_code, generator.warnings)
 }
 
 impl WclapGenerator {
@@ -728,7 +741,8 @@ impl WclapGenerator {
             }
         }
 
-        let dispatch = self.render_dispatch(&hot_bodies, &connections, &node_by_id, &signal_node_ids);
+        let dispatch =
+            self.render_dispatch(&hot_bodies, &connections, &node_by_id, &signal_node_ids);
 
         // `loadbang` fires a single bang the first time audio is rendered —
         // the closest thing this ABI has to "patch finished loading".
@@ -896,7 +910,11 @@ impl WclapGenerator {
                     }
                 } else {
                     // Cold inlet: latch only, never triggers output.
-                    let target = if self.cold_aliases_hot.contains(&id) { 0 } else { k };
+                    let target = if self.cold_aliases_hot.contains(&id) {
+                        0
+                    } else {
+                        k
+                    };
                     defs.push_str(&format!(
                         "  if (m.len >= 1) st->{} = m.a[0];\n",
                         inlet_field(id, target)
@@ -1069,9 +1087,7 @@ impl WclapGenerator {
         for (inlet, default) in latches.iter() {
             let lf = inlet_field(id, *inlet);
             emitted.state_fields.push_str(&format!("  double {lf};\n"));
-            emitted
-                .init
-                .push_str(&format!("  st->{lf} = {default};\n"));
+            emitted.init.push_str(&format!("  st->{lf} = {default};\n"));
         }
         if is_msg_node {
             // How many latch fields exist. May be 0 for a pure source
@@ -1605,8 +1621,13 @@ impl WclapGenerator {
                 // Right to left, so a "t b f" latches the float before the
                 // bang fires — the ordering the whole idiom depends on.
                 for i in (0..n).rev() {
-                    let is_bang = matches!(args.get(i), Some(Token::Symbol(sy)) if sy == "b" || sy == "bang");
-                    let msg = if is_bang { "pd_msg_bang()".to_string() } else { "pd_msg_f(_v)".to_string() };
+                    let is_bang =
+                        matches!(args.get(i), Some(Token::Symbol(sy)) if sy == "b" || sy == "bang");
+                    let msg = if is_bang {
+                        "pd_msg_bang()".to_string()
+                    } else {
+                        "pd_msg_f(_v)".to_string()
+                    };
                     compute.push_str(&format!("  {}(st, {msg});\n", send_fn(id, i as u32)));
                 }
                 EmittedNode {
@@ -2632,7 +2653,10 @@ fn render_output(inp: RenderInput) -> String {
         out.push_str("  (void)st; (void)value;\n");
     } else {
         for &nid in &inp.bendin_ids {
-            out.push_str(&format!("  {f}(st, pd_msg_f(value));\n", f = send_fn(nid, 0)));
+            out.push_str(&format!(
+                "  {f}(st, pd_msg_f(value));\n",
+                f = send_fn(nid, 0)
+            ));
         }
     }
     out.push_str("}\n\n");
@@ -2642,7 +2666,10 @@ fn render_output(inp: RenderInput) -> String {
         out.push_str("  (void)st; (void)value;\n");
     } else {
         for &nid in &inp.touchin_ids {
-            out.push_str(&format!("  {f}(st, pd_msg_f(value));\n", f = send_fn(nid, 0)));
+            out.push_str(&format!(
+                "  {f}(st, pd_msg_f(value));\n",
+                f = send_fn(nid, 0)
+            ));
         }
     }
     out.push_str("}\n\n");
@@ -2652,7 +2679,10 @@ fn render_output(inp: RenderInput) -> String {
         out.push_str("  (void)st; (void)value;\n");
     } else {
         for &nid in &inp.pgmin_ids {
-            out.push_str(&format!("  {f}(st, pd_msg_f(value));\n", f = send_fn(nid, 0)));
+            out.push_str(&format!(
+                "  {f}(st, pd_msg_f(value));\n",
+                f = send_fn(nid, 0)
+            ));
         }
     }
     out.push_str("}\n\n");
@@ -2734,7 +2764,7 @@ fn escape_c_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pdast::parse_patch_no_loader;
+    use crate::parse_patch_no_loader;
 
     fn generate_c(src: &str) -> (String, Vec<String>) {
         let result = parse_patch_no_loader(src).unwrap();
@@ -2932,7 +2962,7 @@ mod tests {
     // the textual format) to exercise tabread~/array codegen reliably.
     #[test]
     fn tabread_reads_seeded_array_data() {
-        use pdast::types::{Canvas as C, Node as N};
+        use crate::types::{Canvas as C, Node as N};
 
         let array_canvas = C {
             x: 0,
@@ -3055,14 +3085,20 @@ mod tests {
         // r x (n0) -> [subpatch placeholder consumes id 1] -> inlet node
         // (n2) -> +1 (n3) -> sig~ (n4) -> outlet~ (n5) -> dac~.
         // The control-side boundary forwards the message verbatim...
-        assert!(c.contains("pd_n2_out0(st, m);"), "inlet must forward m: {c}");
+        assert!(
+            c.contains("pd_n2_out0(st, m);"),
+            "inlet must forward m: {c}"
+        );
         // `+ 1`'s creation arg now seeds its cold-inlet latch (init to 1),
         // so the sum reads through both latches rather than a baked literal.
         assert!(
             c.contains("(st->n3_i0) + (st->n3_i1)"),
             "+ must read its own inlet latches, not a zero stub: {c}"
         );
-        assert!(c.contains("st->n3_i1 = 1;"), "cold inlet must seed from the creation arg: {c}");
+        assert!(
+            c.contains("st->n3_i1 = 1;"),
+            "cold inlet must seed from the creation arg: {c}"
+        );
         // ...and the signal-side boundary stays a plain per-sample mirror.
         assert!(
             c.contains("st->n5 = st->n4;"),
@@ -3133,23 +3169,35 @@ mod tests {
         assert!(warn.is_empty(), "unexpected warnings: {warn:?}");
 
         // Three outlets, fired right to left (velocity, pitch, voice#).
-        let vel = c.find("pd_n2_out2(st, pd_msg_f(_vel));").expect("no velocity send");
-        let pitch = c.find("pd_n2_out1(st, pd_msg_f(_pitch));").expect("no pitch send");
+        let vel = c
+            .find("pd_n2_out2(st, pd_msg_f(_vel));")
+            .expect("no velocity send");
+        let pitch = c
+            .find("pd_n2_out1(st, pd_msg_f(_pitch));")
+            .expect("no pitch send");
         let voice = c
             .find("pd_n2_out0(st, pd_msg_f((double)(_slot + 1)));")
             .expect("no voice-number send");
-        assert!(vel < pitch && pitch < voice, "poly must fire right to left: {c}");
+        assert!(
+            vel < pitch && pitch < voice,
+            "poly must fire right to left: {c}"
+        );
 
         // route emits the REMAINDER of the message on the matching outlet
         // only, and returns — no other branch is touched.
         assert!(c.contains("_rest.len = m.len > 0 ? m.len - 1 : 0;"), "{c}");
-        assert!(c.contains("if (_sel == (1)) { pd_n4_out0(st, _rest); return; }"), "{c}");
-        assert!(c.contains("if (_sel == (2)) { pd_n4_out1(st, _rest); return; }"), "{c}");
+        assert!(
+            c.contains("if (_sel == (1)) { pd_n4_out0(st, _rest); return; }"),
+            "{c}"
+        );
+        assert!(
+            c.contains("if (_sel == (2)) { pd_n4_out1(st, _rest); return; }"),
+            "{c}"
+        );
 
         // A list into a hot inlet spreads across the cold inlets to its right,
         // which is what lets `[pack f f]` fill poly's velocity inlet with no
         // second patch cord.
         assert!(c.contains("case 1: st->n2_i1 = m.a[_i]; break;"), "{c}");
     }
-
 }

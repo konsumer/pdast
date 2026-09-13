@@ -11,8 +11,6 @@
 //! poketrack's plugins/pd2wclap/ for a working example of such a shim and
 //! its build script.
 
-mod wclap_gen;
-
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -61,11 +59,10 @@ fn main() {
         std::process::exit(1);
     });
 
-    let mut generator = wclap_gen::WclapGenerator::new();
-    let c_code = generator.generate(&patch.root);
+    let (c_code, warnings) = pdast::wclap::patch_to_c(&patch);
 
     if !args.quiet {
-        for w in &generator.warnings {
+        for w in &warnings {
             eprintln!("warning: {w}");
         }
     }

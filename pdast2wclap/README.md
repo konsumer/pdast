@@ -71,7 +71,7 @@ Any `[receive NAME]` / `[r NAME]` / `[value NAME]` object with no matching `[sen
 | Buses               | `send` / `s`, `receive` / `r`, `value` (control-rate), `send~` / `receive~`, `throw~` / `catch~` (signal-rate, own namespace)                                          |
 | Sub-patch boundary  | `inlet`, `outlet`, `inlet~`, `outlet~` (passthrough — see "Full pipeline" above; every sub-patch/abstraction instance needs these to actually carry values across)    |
 
-Anything else compiles to a harmless zero stub with a `warning:` on stderr rather than failing — the per-object codegen (`wclap_gen.rs`) is built to grow this list. Not yet implemented: `expr`/`expr~`, `cpole~`/`czero~`, multi-message boxes, and symbol/list-typed routing.
+Anything else compiles to a harmless zero stub with a `warning:` on stderr rather than failing — the per-object codegen (`pdast/src/wclap.rs`, behind the `wclap` feature) is built to grow this list. Not yet implemented: `expr`/`expr~`, `cpole~`/`czero~`, multi-message boxes, and symbol/list-typed routing.
 
 ### `poly`: build your own polyphony out of PD sub-patches
 

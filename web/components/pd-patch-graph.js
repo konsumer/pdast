@@ -9,7 +9,11 @@
  *   title    — optional string shown in header
  *
  * Events:
- *   pd-node-click  — fired on node click; detail = { node: Node }
+ *   pd-node-click  — fired on leaf node click; detail = { node: Node }
+ *
+ * Sub-patches (`sub_patch` with inline content) and graphs are navigable:
+ * clicking one drills into its canvas, and the header breadcrumb / Back button
+ * walk back up. Nesting is unlimited (stack-based).
  *
  * The graph uses the position data (x, y) from the AST directly, so the
  * layout matches what PureData would show.
@@ -42,6 +46,31 @@ const css = `
   }
   .title { font-family: var(--pd-font); color: var(--pd-accent); flex: 1; }
   .header button { font-size: 0.8em; padding: 0.15em 0.45em; }
+  .crumbs {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.15em;
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--pd-font);
+    white-space: nowrap;
+  }
+  .crumb {
+    background: none;
+    border: none;
+    padding: 0.1em 0.25em;
+    font: inherit;
+    font-size: 0.95em;
+    color: var(--pd-accent);
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  .crumb:hover { background: var(--pd-obj); }
+  .crumb.current { color: var(--pd-text); cursor: default; }
+  .crumb.current:hover { background: none; }
+  .sep { color: var(--pd-text-dim); opacity: 0.7; }
+  .back-btn:disabled { opacity: 0.35; cursor: default; }
   .svg-wrap {
     flex: 1;
     overflow: hidden;
@@ -49,10 +78,20 @@ const css = `
     position: relative;
   }
   .svg-wrap.panning { cursor: grabbing; }
-  svg {
+  .svg-wrap svg {
     width: 100%;
     height: 100%;
     display: block;
+  }
+  .fit-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+  }
+  .fit-btn svg {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
   }
   .empty {
     display: flex;
@@ -199,6 +238,37 @@ function wireWidth(type) {
   return type === 'sig' ? SIG_W : CTRL_W
 }
 
+/**
+ * Canvas embedded in a navigable node, or null if the node is a leaf.
+ *
+ * Inline `pd` sub-patches carry their canvas at `kind.content` (with
+ * `type: "inline"`); unresolved abstractions carry no canvas. A `graph`
+ * node's `kind.content` is always a Canvas.
+ *
+ * @param {object} node  AST Node
+ * @returns {object|null} Canvas
+ */
+function subCanvas(node) {
+  const k = node?.kind
+  if (!k) return null
+  if (k.kind === 'sub_patch') return k.content?.type === 'inline' ? k.content : null
+  if (k.kind === 'graph') return k.content ?? null
+  return null
+}
+
+/** Short label for a navigable node, used in breadcrumbs. */
+function subLabel(node) {
+  const k = node.kind
+  if (k.kind === 'sub_patch') return k.name || 'pd'
+  if (k.kind === 'graph') return 'graph'
+  return 'subpatch'
+}
+
+/** Escape text for safe interpolation into innerHTML. */
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+}
+
 class PdPatchGraph extends HTMLElement {
   static observedAttributes = ['title']
 
@@ -211,6 +281,8 @@ class PdPatchGraph extends HTMLElement {
 
     this._canvas = null
     this._title = ''
+    /** Ancestor frames: { canvas, title }, outermost first. */
+    this._stack = []
 
     // Pan / zoom state
     this._tx = 20
@@ -232,6 +304,7 @@ class PdPatchGraph extends HTMLElement {
   /** @param {object|null} val  Canvas AST node */
   set canvas(val) {
     this._canvas = val
+    this._stack = []
     this._tx = 20
     this._ty = 20
     this._scale = 1
@@ -250,29 +323,77 @@ class PdPatchGraph extends HTMLElement {
   }
 
   _render() {
+    const stack = this._stack
+    const crumbs = [...stack.map((f) => f.title), this.title]
+    const crumbsHtml = crumbs
+      .map((t, i) => {
+        const current = i === crumbs.length - 1
+        const cls = current ? 'crumb current' : 'crumb'
+        const label = escapeHtml(t)
+        return current ? `<span class="${cls}" aria-current="page">${label}</span>` : `<button type="button" class="${cls}" data-index="${i}" title="Go to ${label}">${label}</button>`
+      })
+      .join('<span class="sep">›</span>')
+
     this.shadowRoot.innerHTML = `
       <div class="header">
-        <span class="title">${this.title}</span>
-        <button class="fit-btn" title="Fit to view">⊡ Fit</button>
-        <button class="reset-btn" title="Reset zoom">1:1</button>
+        <button class="back-btn" title="Up one level" ${stack.length ? '' : 'disabled'}>‹ Back</button>
+        <nav class="crumbs" aria-label="Sub-patch path">${crumbsHtml}</nav>
+        <button class="fit-btn" title="Fit to view">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Fit
+        </button>
       </div>
       <div class="svg-wrap">
         ${this._canvas ? `<svg xmlns="${SVG_NS}" role="img" aria-label="PD patch graph"></svg>` : '<div class="empty">No patch loaded</div>'}
       </div>
     `
 
+    this.shadowRoot.querySelector('.back-btn')?.addEventListener('click', () => this._back())
     this.shadowRoot.querySelector('.fit-btn')?.addEventListener('click', () => this._fitView())
-    this.shadowRoot.querySelector('.reset-btn')?.addEventListener('click', () => {
-      this._tx = 20
-      this._ty = 20
-      this._scale = 1
-      this._drawGraph()
+    this.shadowRoot.querySelectorAll('.crumb[data-index]').forEach((btn) => {
+      btn.addEventListener('click', () => this._navigate(Number(btn.dataset.index)))
     })
 
     if (this._canvas) {
       this._setupPanZoom()
       this._drawGraph()
     }
+  }
+
+  /**
+   * Drill into a node's embedded canvas. The current canvas/title is pushed
+   * onto the navigation stack so the breadcrumb can walk back out.
+   */
+  _enter(node) {
+    const child = subCanvas(node)
+    if (!child) return false
+    this._stack.push({ canvas: this._canvas, title: this.title })
+    this._canvas = child
+    this._title = subLabel(node)
+    this._render()
+    return true
+  }
+
+  /** Pop one level off the navigation stack. */
+  _back() {
+    const frame = this._stack.pop()
+    if (!frame) return
+    this._canvas = frame.canvas
+    this._title = frame.title
+    this._render()
+  }
+
+  /**
+   * Jump to breadcrumb index. Index 0 is the root; the final index is the
+   * current canvas (no-op).
+   */
+  _navigate(index) {
+    if (index >= this._stack.length) return
+    const frame = this._stack[index]
+    this._stack = this._stack.slice(0, index)
+    this._canvas = frame.canvas
+    this._title = frame.title
+    this._render()
   }
 
   _setupPanZoom() {
@@ -287,17 +408,22 @@ class PdPatchGraph extends HTMLElement {
       e.preventDefault()
     })
 
-    window.addEventListener('mousemove', (e) => {
-      if (!this._dragging) return
-      this._tx = this._dragStart.tx + (e.clientX - this._dragStart.x)
-      this._ty = this._dragStart.ty + (e.clientY - this._dragStart.y)
-      this._updateTransform()
-    })
+    // Window-level move/up handlers are bound once: `_render` replaces the wrap
+    // on every navigation, and re-adding these would leak listeners.
+    if (!this._windowPanBound) {
+      this._windowPanBound = true
+      window.addEventListener('mousemove', (e) => {
+        if (!this._dragging) return
+        this._tx = this._dragStart.tx + (e.clientX - this._dragStart.x)
+        this._ty = this._dragStart.ty + (e.clientY - this._dragStart.y)
+        this._updateTransform()
+      })
 
-    window.addEventListener('mouseup', () => {
-      this._dragging = false
-      wrap.classList.remove('panning')
-    })
+      window.addEventListener('mouseup', () => {
+        this._dragging = false
+        this.shadowRoot.querySelector('.svg-wrap')?.classList.remove('panning')
+      })
+    }
 
     wrap.addEventListener(
       'wheel',
@@ -318,12 +444,12 @@ class PdPatchGraph extends HTMLElement {
   }
 
   _updateTransform() {
-    const g = this.shadowRoot.querySelector('svg > g.viewport')
+    const g = this.shadowRoot.querySelector('.svg-wrap svg > g.viewport')
     if (g) g.setAttribute('transform', `translate(${this._tx},${this._ty}) scale(${this._scale})`)
   }
 
   _drawGraph() {
-    const svg = this.shadowRoot.querySelector('svg')
+    const svg = this.shadowRoot.querySelector('.svg-wrap svg')
     if (!svg || !this._canvas) return
     svg.innerHTML = ''
 
@@ -377,14 +503,15 @@ class PdPatchGraph extends HTMLElement {
       const type = nodeType(node)
       const color = typeColor(type)
       const isText = kind === 'text'
+      const drillable = subCanvas(node) !== null
 
       const g = el('g', {
         class: 'node',
         'data-node': node.id,
         transform: `translate(${x},${y})`,
-        style: 'cursor:pointer',
+        style: drillable ? 'cursor:zoom-in' : 'cursor:pointer',
         role: 'button',
-        'aria-label': label,
+        'aria-label': drillable ? `${label} — open sub-patch` : label,
         tabindex: '0'
       })
 
@@ -463,6 +590,12 @@ class PdPatchGraph extends HTMLElement {
       }
 
       g.addEventListener('click', () => {
+        // Sub-patches / graphs open as a graph in place; everything else is a
+        // leaf, so hand it to the host for the JSON detail drawer.
+        if (drillable) {
+          this._enter(node)
+          return
+        }
         this.dispatchEvent(
           new CustomEvent('pd-node-click', {
             detail: { node },
@@ -519,7 +652,7 @@ class PdPatchGraph extends HTMLElement {
   }
 
   _fitView() {
-    const svg = this.shadowRoot.querySelector('svg')
+    const svg = this.shadowRoot.querySelector('.svg-wrap svg')
     const wrap = this.shadowRoot.querySelector('.svg-wrap')
     if (!svg || !wrap || !this._canvas?.nodes?.length) return
 

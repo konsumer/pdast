@@ -45,11 +45,11 @@
 //!
 //! Build with `wasm-pack`:
 //! ```sh
-//! wasm-pack build pdast --features wasm-js
+//! wasm-pack build pdast --features wasm-js,wclap
 //! ```
 //! Or with cargo directly:
 //! ```sh
-//! cargo build -p pdast --target wasm32-unknown-unknown --features wasm-js
+//! cargo build -p pdast --target wasm32-unknown-unknown --features wasm-js,wclap
 //! ```
 
 use std::collections::HashMap;

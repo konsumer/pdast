@@ -38,8 +38,8 @@ Additional files:
 # Build all crates
 cargo build --release
 
-# Build WASM for JS/browser
-wasm-pack build --target web pdast --features wasm-js
+# Build WASM for JS/browser (web demo needs `wclap` for the WCLAP button)
+wasm-pack build --target web pdast --features wasm-js,wclap
 
 # Build WASM for non-JS hosts
 cargo build -p pdast --target wasm32-wasip1 --release

@@ -42,7 +42,9 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM package
-        run: wasm-pack build --target web pdast --features wasm-js
+        # must match `npm run build`: the web demo calls `wclapToC`, which only
+        # exists when the `wclap` feature is enabled alongside `wasm-js`.
+        run: wasm-pack build --target web pdast --features wasm-js,wclap
 
       - name: Run tests
         run: cargo test --workspace

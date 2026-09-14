@@ -132,10 +132,21 @@ class PdLoader extends HTMLElement {
       // Use wasm-url attribute if provided, otherwise resolve relative to this
       // file (works for the web demo at any URL prefix).
       const wasmUrl = this.getAttribute('wasm-url') ?? new URL('../pdast/pdast.js', import.meta.url).href
-      const mod = await import(wasmUrl)
+      // Deploys stamp <meta name="pdast-build"> with the commit id. Appending it
+      // as a query busts the long-lived cache so a redeploy can never pair new
+      // JS glue with a stale pdast_bg.wasm (or vice-versa). Absent in local dev.
+      const build = this.getAttribute('build') || document.querySelector('meta[name="pdast-build"]')?.content || ''
+      const versioned = (href) => {
+        if (!build) return href
+        const url = new URL(href, location.href)
+        url.searchParams.set('v', build)
+        return url.href
+      }
+      const mod = await import(versioned(wasmUrl))
       // --target web builds require calling the default init() before use
       if (typeof mod.default === 'function') {
-        await mod.default()
+        const wasmBin = new URL('pdast_bg.wasm', new URL(wasmUrl, location.href))
+        await mod.default(build ? versioned(wasmBin.href) : undefined)
       }
       this._parse = mod.parse
       this._mod = mod

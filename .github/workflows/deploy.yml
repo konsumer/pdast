@@ -66,6 +66,10 @@ jobs:
           cp web/wclap.js web/wclap-worker.js dist/
           cp -r web/vendor dist/vendor
           cp -r pdast/pkg/. dist/pdast/
+          # Stamp the commit id so web/components/pd-loader.js can cache-bust the
+          # WASM module + binary (GitHub Pages serves them with max-age=600 and
+          # fixed filenames, so a redeploy would otherwise mix old/new assets).
+          node -e "const fs=require('fs');const p='dist/index.html';const tag='  <meta name=\"pdast-build\" content=\"'+(process.env.GITHUB_SHA||'dev').slice(0,7)+'\" />';fs.writeFileSync(p,fs.readFileSync(p,'utf8').replace('</head>',tag+'\n</head>'))"
           # Prevent Jekyll from processing the site (required for _ files and WASM)
           touch dist/.nojekyll
 

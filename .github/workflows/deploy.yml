@@ -51,6 +51,9 @@ jobs:
       #   dist/
       #   ├── index.html
       #   ├── components/
+      #   ├── wclap.js        ← imports ./wclap-worker.js
+      #   ├── wclap-worker.js ← fetches ./vendor/** relative to itself
+      #   ├── vendor/         ← CLAP shim + headers for in-browser linking
       #   └── pdast/          ← WASM package (imported as ../pdast/pdast.js
       #                          relative to components/, works at any URL prefix)
       - name: Assemble site
@@ -58,6 +61,8 @@ jobs:
           mkdir -p dist/pdast dist/components
           cp web/index.html dist/
           cp -r web/components/. dist/components/
+          cp web/wclap.js web/wclap-worker.js dist/
+          cp -r web/vendor dist/vendor
           cp -r pdast/pkg/. dist/pdast/
           # Prevent Jekyll from processing the site (required for _ files and WASM)
           touch dist/.nojekyll
